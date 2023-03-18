@@ -53,10 +53,11 @@ formations:
 
 # items
 
-- wood (acquired via axe + tree + time)  
-- screws (sold by vendors)  
-- targeting computer (sold by vendors)  
+- wood (acquired via axe + tree + time, used to make turrets)  
+- screws (sold by vendors, used to make turrets)  
+- targeting computer (sold by vendors, used to make most advanced turret)  
 
+### all sold by vendors
 - axe (allows player to remove more trees simultaneously)  
 - flare (moves up timers: vendor arrives immediately, next wave happens subsequently)  
 - airstrike (immediately removes enemies and trees in a player-selected area)   
