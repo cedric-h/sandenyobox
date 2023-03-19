@@ -1,0 +1,8 @@
+{
+  "name": "sandenyo",
+  "main": "index.js",
+  "assets": ["assets/*.svg"],
+  "styles": ["index.css"],
+  "devAssets": [],
+  "moduleDir": "src"
+}
