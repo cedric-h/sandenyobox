@@ -205,26 +205,28 @@ const TrapMenu = kind({
                 },
                 {
                   tag: "span",
-                  /* "has_enough -> classes" is a workaround for bug where 'class' attribute is set to a stringified function */
-                  computed: [
-                    { method: "content", path: ["owner.model.ingredient", "owner.model.amount", "app.$.inventory" ] },
-                    { method: "has_enough", path: ["owner.model.ingredient", "owner.model.amount", "app.$.inventory" ] },
-                  ],
                   bindings: [
-                    { from: "has_enough", to: "classes",
-                      transform: has_enough => "recipe-ingredient-span" + (has_enough ? '' : ' recipe-ingredient-span-missing')
-                    },
+                    { from: "owner.model.ingredient", to: "ingredient" },
+                    { from: "owner.model.amount"    , to: "amount"     },
                   ],
-                  has_enough() {
-                    const id  = this.get("owner.model.ingredient");
-                    const amt = this.get("owner.model.amount");
-                    return can_afford(this.get('app.$.inventory'), { [id]: amt });
+                  /* bind the appropriate ingredient in the inventory to "inv_has" */
+                  ingredientChanged() {
+                    const id  = this.get("ingredient");
+                    const inv = this.get('app.$.inventory');
+                    const idx = inv.findIndex(x => x.get('id') == id);
+                    this.binding({ from: 'app.$.inventory.models.' + idx + '.count', to: 'inv_has' });
                   },
-                  content() {
-                    const id  = this.get("owner.model.ingredient");
-                    const amt = this.get("owner.model.amount");
-                    return `- x${amt} ${id_to_name[id]}`;
-                  }
+                  observers: [{ method: 'rerender', path: [ "inv_has", "amount" ] }],
+                  rerender() {
+                    const id  = this.get("ingredient");
+                    const amt = this.get("amount");
+                    this.set('content', `- x${amt} ${id_to_name[id]}`);
+
+                    let classes = "recipe-ingredient-span";
+                    if (this.get("inv_has") < amt)
+                      classes += ' recipe-ingredient-span-missing';
+                    this.set('classes', classes);
+                  },
                 }
               ],
             }
@@ -254,7 +256,6 @@ const TrapMenu = kind({
 
             // console.log({ inv });
             // this.set('app.$.inventory', new Collection(inv.toJSON()));
-            inv.commit();
           }
         },
       ]
@@ -316,12 +317,11 @@ ready(function() {
   /* everything worth saving to disk */
   console.log(app.get('$.inventory.models.0.count'));
   // console.log();
-  app.get('$.inventory').modelsChanged(console.log);
+  app.get('$.inventory.models.0').observe('count', (was, is, prop) => console.log({ was, is, prop }));
   window.onkeydown = () =>  {
     const model = app.get('$.inventory').at(0);
     const now = model.get('count');
     console.log(now);
-    debugger;
     model.set('count', 1+now);
   }
 
