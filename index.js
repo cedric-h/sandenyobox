@@ -3,12 +3,13 @@
 const ready = require('enyo/ready'),
       kind = require('enyo/kind');
 
-const Button       = require('enyo/Button'),
-      Collection   = require('enyo/Collection'),
-      Model        = require('enyo/Model'),
-      DataRepeater = require('enyo/DataRepeater'),
-      Group        = require('enyo/Group'),
-      EnyoImage    = require('enyo/Image');
+const Button          = require('enyo/Button'),
+      Collection      = require('enyo/Collection'),
+      Model           = require('enyo/Model'),
+      DataRepeater    = require('enyo/DataRepeater'),
+      Group           = require('enyo/Group'),
+      EnyoApplication = require("enyo/Application"),
+      EnyoImage       = require('enyo/Image');
 
 let _id = 0;
 const ID_NONE           = _id++;
@@ -24,19 +25,17 @@ const ID_TRAP_SWINGER   = _id++;
 const ID_TRAP_BLASTER   = _id++;
 const ID_TRAP_AUTO      = _id++;
 
-/* everything worth saving to disk */
-const state = new Model({
-  inventory: new Collection([
-    { count: 20, id: ID_ITEM_WOOD     },
-    { count: 32, id: ID_ITEM_SCREW    },
-    { count:  2, id: ID_ITEM_AXE      },
-    { count:  1, id: ID_ITEM_FLARE    },
-    { count:  1, id: ID_ITEM_AIRSTRIKE},
-    { count:  3, id: ID_ITEM_PC       },
-    { count:  1, id: ID_ITEM_BOOK     },
-    { count:  0, id: ID_NONE          },
-  ])
-});
+const can_afford = (inv, recipe) => {
+  for (const id in recipe) {
+    const amount = recipe[id];
+    for (let i = 0; i < inv.length; i++) {
+      const stack = inv.at(i);
+      if (stack.get('id') == id && stack.get('count') < amount)
+        return false;
+    }
+  }
+  return true;
+}
 
 const id_to_slug = {
   [ID_NONE          ]: "warning",
@@ -105,36 +104,65 @@ const ItemBox = kind({
 
 const TrapBox = kind({
   kind: Button,
-  classes: 'trap-box',
-  events: { onSelect: '' },
-  handlers: { ontap: 'on_tap' },
   components: [
     { name: 'img',   classes: "icon-shadow", kind: EnyoImage, src: 'assets/warning.svg' },
   ],
   bindings: [
     { from: 'model.id', to: '$.img.src', transform: id => `assets/${id_to_slug[id]}.svg` },
     { from: 'model.id', to: '$.img.alt', transform: id => id_to_slug[id] },
-    { from: 'selected', to: 'classes',   transform: selected => {
-      let classes = 'enyo-tool-decorator trap-box';
-      if (selected) classes += ' trap-box-selected';
-      return classes;
-    }}
+    { from: 'owner.selected_trap', to: 'selected', transform(selected) { return selected == this.get('model.id') } },
+    { from: 'classes_str', to: 'classes' },
   ],
-  on_tap() { this.doSelect(this.get('model.id')); },
-});
+  computed: [ { method: 'classes_str', path: ['selected'] } ],
+  classes_str() {
+    const selected = this.get('selected');
+    const trap_id = this.get('model.id');
 
-const can_afford = recipe => {
-  for (const id in recipe) {
-    const amount = recipe[id];
-    for (const stack of state.get('inventory').models)
-      if (stack.get('id') == id && stack.get('count') < amount)
-        return false;
+    let classes = 'enyo-tool-decorator trap-box';
+
+    if (selected)
+      classes += ' trap-box-selected';
+    else if (can_afford(this.get('app.$.inventory'), trap_to_recipe[trap_id]))
+      classes += ' trap-box-affordable';
+
+    return classes;
   }
-  return true;
-}
+});
+/*
+const TrapBox = kind({
+  kind: Button,
+  classes: 'trap-box',
+  components: [
+    { name: 'img',   classes: "icon-shadow", kind: EnyoImage, src: 'assets/warning.svg' },
+  ],
+  bindings: [
+    { from: 'model.id', to: '$.img.src', transform: id => `assets/${id_to_slug[id]}.svg` },
+    { from: 'model.id', to: '$.img.alt', transform: id => id_to_slug[id] },
+    { from: 'classes_str', to: 'classes' },
+  ],
+  computed: [
+    { method: 'classes_str', path: [ 'owner.selected_trap' ] }// , 'affordable' ] }
+    // { method: 'affordable',  path: [ 'affordable' ] }
+  ],
+  classes_str() {
+    const selected = this.get('owner.selected_trap');
+    const trap_id = this.get('model.id');
+
+    let classes = 'enyo-tool-decorator trap-box';
+
+    if (selected == trap_id)
+      classes += ' trap-box-selected';
+    else if (can_afford(trap_to_recipe[trap_id]))
+      classes += ' trap-box-affordable';
+
+    return classes;
+  },
+});*/
+
 const TrapMenu = kind({
   name: "TrapMenu",
-  handlers: { onSelect: 'on_select' },
+  handlers: { ontap: 'on_tap' },
+  selected_trap: ID_TRAP_PISTON,
   components: [
     { content: "traps", classes: "section-header" },
     {
@@ -150,40 +178,100 @@ const TrapMenu = kind({
     { name: "trap_name", classes: "section-subheader" },
     { name: "info", classes: "section-info", allowHtml: true },
     {
-      classes: 'section-info recipe-ingredient-list',
+      classes: "section-info",
+      style: "margin-top: 1em; margin-bottom: 0.5em;",
+      content: "<b>INGREDIENTS:</b>",
+      allowHtml: true,
+    },
+    {
+      classes: 'recipe-ingredient-list',
       components: [
-        { name: 'ingredient_list', allowHtml: true },
-        { kind: Button, name: "craft", content: "CRAFT", style: "visibility:hidden", classes: 'recipe-buy-button' },
+        {
+          kind: DataRepeater,
+
+          name: "recipe",
+          classes: "section-info",
+          components: [
+            {
+              /* hide if empty */
+              bindings: [ { from: "model.amount", to: "showing", transform: x => !!x } ],
+              components: [
+                {
+                  tag: "img",
+                  classes: "recipe-ingredient-img",
+                  bindings: [
+                    { from: "owner.model.ingredient", to: "attributes.src", transform: id => `assets/${id_to_slug[id]}.svg` },
+                  ],
+                },
+                {
+                  tag: "span",
+                  /* "has_enough -> classes" is a workaround for bug where 'class' attribute is set to a stringified function */
+                  computed: [
+                    { method: "content", path: ["owner.model.ingredient", "owner.model.amount", "app.$.inventory" ] },
+                    { method: "has_enough", path: ["owner.model.ingredient", "owner.model.amount", "app.$.inventory" ] },
+                  ],
+                  bindings: [
+                    { from: "has_enough", to: "classes",
+                      transform: has_enough => "recipe-ingredient-span" + (has_enough ? '' : ' recipe-ingredient-span-missing')
+                    },
+                  ],
+                  has_enough() {
+                    const id  = this.get("owner.model.ingredient");
+                    const amt = this.get("owner.model.amount");
+                    return can_afford(this.get('app.$.inventory'), { [id]: amt });
+                  },
+                  content() {
+                    const id  = this.get("owner.model.ingredient");
+                    const amt = this.get("owner.model.amount");
+                    return `- x${amt} ${id_to_name[id]}`;
+                  }
+                }
+              ],
+            }
+          ],
+          bindings: [
+            {
+              from: "owner.selected_trap",
+              to: "collection",
+              transform: trap_id => Object
+                .entries(trap_to_recipe[trap_id])
+                .map(([ingredient, amount]) => ({ ingredient, amount }))
+            }
+          ],
+        },
+        {
+          kind: Button,
+          content: "CRAFT",
+          classes: 'recipe-buy-button',
+          handlers: { ontap: 'on_tap' },
+          on_tap() {
+            const recipe = trap_to_recipe[this.get("owner.selected_trap")];
+            const inv = this.get('app.$.inventory');
+            for (const key in recipe) {
+              const itm = inv.find(x => x.get('id') == key);
+              itm.set('count', itm.get('count') - recipe[key]);
+            }
+
+            // console.log({ inv });
+            // this.set('app.$.inventory', new Collection(inv.toJSON()));
+            inv.commit();
+          }
+        },
       ]
     }
   ],
-  on_select(sender, trap_id) {
-    for (const trap of this.$.dataRepeater.$.container.children)
-      trap.set('selected', trap.get('model.id') == trap_id);
-    this.$.trap_name.set('content', id_to_name[trap_id]);
-
-    this.$.info.set('content', id_to_desc[trap_id] + '<br><br>');
-
-    let list = '<b>INGREDIENTS:</b><br>';
-    const recipe = trap_to_recipe[trap_id];
-    for (const id in recipe) {
-      if (recipe[id] == 0) continue;
-      list += `<img class="recipe-ingredient-img" src="assets/${id_to_slug[id]}.svg">`;
-
-      let klass = "recipe-ingredient-span";
-      if (!can_afford({ [id]: recipe[id] })) klass += ' red';
-      list += `<span class="${klass}"> - x${recipe[id]} ${id_to_name[id]} </span>`;
-      list += '<br>';
-    }
-    this.$.ingredient_list.set('content', list);
-
-    this.$.craft.set('style', '');
-    this.$.craft.set('disabled', !can_afford(recipe));
-  }
+  bindings: [
+    { from: "selected_trap", to: "$.trap_name.content", transform: id => id_to_name[id] },
+    { from: "selected_trap", to: "$.info.content",      transform: id => id_to_desc[id] },
+  ],
+  on_tap(sender, ev) {
+    if (ev.model && ev.model.get)
+      this.set('selected_trap', ev.model.get('id'));
+  },
 });
 
 const App = kind({
-  name: "sandenyobox",
+  name: "SandEnyoBox",
   components: [{
     classes: "sidebar",
     components: [
@@ -193,19 +281,49 @@ const App = kind({
           {
             kind: DataRepeater,
             components: [ { kind: ItemBox } ],
-            collection: state.get('inventory')
+            bindings: [ { from: 'app.$.inventory', to: 'collection' } ],
           }
         ]
       },
       { content: "<br>", allowHtml: true },
-      { kind: TrapMenu },
+      { kind: TrapMenu, name: 'trap_menu' },
     ],
   }]
 });
 
 ready(function() {
-  const app = new App();
-  // window.onkeydown = () => inventory.at(0).set('item_count', inventory.at(0).get('item_count')+1);
+  const app = new EnyoApplication({
+    components: [
+      {
+        name: 'inventory',
+        kind: Collection,
+        public: true,
+        models: [
+          { count: 20, id: ID_ITEM_WOOD     },
+          { count: 32, id: ID_ITEM_SCREW    },
+          { count:  2, id: ID_ITEM_AXE      },
+          { count:  1, id: ID_ITEM_FLARE    },
+          { count:  1, id: ID_ITEM_AIRSTRIKE},
+          { count:  3, id: ID_ITEM_PC       },
+          { count:  1, id: ID_ITEM_BOOK     },
+          { count:  0, id: ID_NONE          },
+        ],
+      }
+    ],
+    view: App
+  });
+
+  /* everything worth saving to disk */
+  console.log(app.get('$.inventory.models.0.count'));
+  // console.log();
+  app.get('$.inventory').modelsChanged(console.log);
+  window.onkeydown = () =>  {
+    const model = app.get('$.inventory').at(0);
+    const now = model.get('count');
+    console.log(now);
+    debugger;
+    model.set('count', 1+now);
+  }
 
   app.renderInto(document.body);
 
