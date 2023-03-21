@@ -18,6 +18,27 @@ vim: sw=2 ts=2 expandtab smartindent ft=css
 }
 .item-box:active { border-color: hsl(0, 0%, 45%) hsl(0, 0%, 21%) hsl(0, 0%, 21%) hsl(0, 0%, 45%); }
 .item-box:active > img { transform: scale(1.05); }
+.item-box-tooltip {
+  background-color: hsl(0, 0%, 10%);
+  font-size: 1.1em;
+  visibility: hidden;
+
+  font-family: monospace;
+  color: hsl(0, 0%, 80%);
+
+  z-index: 1;
+  padding: 0.5em;
+
+  position: absolute;
+  left: 0px;
+  bottom: -40%;
+}
+.item-box-parent:hover .item-box-tooltip { visibility: visible; }
+
+.item-box-div div {
+  display: flex;
+  flex-wrap: wrap;
+}
 
 .item-box       { background: hsl(0, 0%, 30%); }
 .item-box:hover { background: hsl(0, 0%, 44%); }
@@ -119,4 +140,40 @@ vim: sw=2 ts=2 expandtab smartindent ft=css
   position: absolute;
   left: initial;
   right: 0;
+}
+.sidesidebar {
+  right: 22em;
+  border-right: 0.2em solid hsl(0, 0%, 20%);
+}
+
+.vendor-good-div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.time-queue-container {
+  font-family: monospace;
+  position: absolute;
+  bottom: 0.1em;
+  left: 0.4em;
+}
+.time-queue-time {
+  font-size: 1.6em;
+  color: hsl(0, 0%, 30%);
+}
+.time-queue-icon {
+  width: 1.5em;
+  height: 1.5em;
+  position: relative;
+  top: 0.15em;
+  right: 0.1em;
+  filter: drop-shadow(3px 2px 1px rgba(0, 0, 0, 0.4)); 
+}
+.time-queue-desc {
+  font-size: 1.1em;
+  position: relative;
+  bottom: 0.2em;
+  font-weight: bold;
+  color: hsl(0, 0%, 45%);
 }

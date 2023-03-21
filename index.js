@@ -27,12 +27,10 @@ const ID_TRAP_AUTO      = _id++;
 
 const can_afford = (inv, recipe) => {
   for (const id in recipe) {
-    const amount = recipe[id];
-    for (let i = 0; i < inv.length; i++) {
-      const stack = inv.at(i);
-      if (stack.get('id') == id && stack.get('count') < amount)
-        return false;
-    }
+    const needs = recipe[id];
+    const has   = inv.get(id);
+    if (has < needs)
+      return false;
   }
   return true;
 }
@@ -87,19 +85,40 @@ const trap_to_recipe = {
 };
 
 const ItemBox = kind({
-  kind: Button,
-  classes: 'item-box',
+  classes: 'item-box-parent',
+  iid: ID_NONE,
+  enable_tooltips: true,
   components: [
-    { name: 'img',   classes: "icon-shadow", kind: EnyoImage, src: 'assets/warning.svg' },
-    { name: 'count', classes: "item-box-count", content: '' }
+    {
+      kind: Button,
+      classes: 'item-box',
+      components: [
+        { name: 'img',   classes: "icon-shadow", kind: EnyoImage, src: 'assets/warning.svg' },
+        { name: 'count', classes: "item-box-count" },
+      ],
+    },
+    { name: 'tooltip', classes: 'item-box-tooltip', tag: 'span' },
   ],
   bindings: [
-    { from: 'model.id',    to: '$.img.src', transform: id => `assets/${id_to_slug[id]}.svg` },
-    { from: 'model.id',    to: '$.img.alt', transform: id => id_to_slug[id] },
-    { from: 'model.count', to: '$.count.content' },
-    { from: 'model.id',    to: '$.img.style'  , transform: id => 'visibility: ' + ((id == ID_NONE) ? 'hidden' : 'visible') },
-    { from: 'model.id',    to: '$.count.style', transform: id => 'visibility: ' + ((id == ID_NONE) ? 'hidden' : 'visible') },
+    { from: 'iid', to: '$.img.src', transform: iid => `assets/${id_to_slug[iid]}.svg` },
+    { from: 'iid', to: '$.img.alt', transform: iid => id_to_slug[iid] },
+    { from: 'iid', to: '$.img.style'  , transform: iid => 'visibility: ' + ((iid == ID_NONE) ? 'hidden' : 'visible') },
+    { from: 'iid', to: '$.count.style', transform: iid => 'visibility: ' + ((iid == ID_NONE) ? 'hidden' : 'visible') },
+    { from: 'iid', to: '$.tooltip.showing', transform(iid) { return this.get('enable_tooltips') && iid != ID_NONE } },
+    { from: 'iid', to: '$.tooltip.content', transform: iid => id_to_name[iid].toUpperCase() + ': ' + id_to_desc[iid] },
+    { from: 'count', to: '$.count.content' },
   ],
+});
+const InvItemBox = kind({
+  kind: ItemBox,
+  bindings: [{ from: 'model.id', to: 'iid' }],
+	create() {
+		this.inherited(arguments);
+    const id = this.get('model.id');
+    console.log(id);
+    if (id != ID_NONE)
+      this.binding({ from: 'app.inv.' + id, to: 'count' });
+  }
 });
 
 const TrapBox = kind({
@@ -110,11 +129,8 @@ const TrapBox = kind({
   bindings: [
     { from: 'model.id', to: '$.img.src', transform: id => `assets/${id_to_slug[id]}.svg` },
     { from: 'model.id', to: '$.img.alt', transform: id => id_to_slug[id] },
-    { from: 'owner.selected_trap', to: 'selected', transform(selected) { return selected == this.get('model.id') } },
-    { from: 'classes_str', to: 'classes' },
   ],
-  computed: [ { method: 'classes_str', path: ['selected'] } ],
-  classes_str() {
+  selectedChanged() {
     const selected = this.get('selected');
     const trap_id = this.get('model.id');
 
@@ -122,42 +138,20 @@ const TrapBox = kind({
 
     if (selected)
       classes += ' trap-box-selected';
-    else if (can_afford(this.get('app.$.inventory'), trap_to_recipe[trap_id]))
+    else if (can_afford(this.get('app.inv'), trap_to_recipe[trap_id]))
       classes += ' trap-box-affordable';
 
-    return classes;
+    this.set('classes', classes);
+  },
+	create() {
+		this.inherited(arguments);
+
+    for (const key in trap_to_recipe[this.get("model.id")])
+      this.observe('app.inv.' + key, this.selectedChanged, this);
+
+    this.selectedChanged();
   }
 });
-/*
-const TrapBox = kind({
-  kind: Button,
-  classes: 'trap-box',
-  components: [
-    { name: 'img',   classes: "icon-shadow", kind: EnyoImage, src: 'assets/warning.svg' },
-  ],
-  bindings: [
-    { from: 'model.id', to: '$.img.src', transform: id => `assets/${id_to_slug[id]}.svg` },
-    { from: 'model.id', to: '$.img.alt', transform: id => id_to_slug[id] },
-    { from: 'classes_str', to: 'classes' },
-  ],
-  computed: [
-    { method: 'classes_str', path: [ 'owner.selected_trap' ] }// , 'affordable' ] }
-    // { method: 'affordable',  path: [ 'affordable' ] }
-  ],
-  classes_str() {
-    const selected = this.get('owner.selected_trap');
-    const trap_id = this.get('model.id');
-
-    let classes = 'enyo-tool-decorator trap-box';
-
-    if (selected == trap_id)
-      classes += ' trap-box-selected';
-    else if (can_afford(trap_to_recipe[trap_id]))
-      classes += ' trap-box-affordable';
-
-    return classes;
-  },
-});*/
 
 const TrapMenu = kind({
   name: "TrapMenu",
@@ -166,8 +160,17 @@ const TrapMenu = kind({
   components: [
     { content: "traps", classes: "section-header" },
     {
+      /* TODO: DataRepeater has a whole lot of code in it for handling
+       * the selection; I should probably make use of it instead of rolling my own */
       kind: DataRepeater,
-      components: [ { kind: TrapBox } ],
+      components: [ {
+        kind: TrapBox, 
+        bindings: [{
+          from: 'owner.selected_trap',
+          to: 'selected',
+          transform(selected) { return selected == this.get('model.id') }
+        }],
+      } ],
       collection: new Collection([
         { id: ID_TRAP_PISTON   },
         { id: ID_TRAP_SWINGER  },
@@ -211,10 +214,7 @@ const TrapMenu = kind({
                   ],
                   /* bind the appropriate ingredient in the inventory to "inv_has" */
                   ingredientChanged() {
-                    const id  = this.get("ingredient");
-                    const inv = this.get('app.$.inventory');
-                    const idx = inv.findIndex(x => x.get('id') == id);
-                    this.binding({ from: 'app.$.inventory.models.' + idx + '.count', to: 'inv_has' });
+                    this.binding({ from: 'app.inv.' + this.get("ingredient"), to: 'inv_has' });
                   },
                   observers: [{ method: 'rerender', path: [ "inv_has", "amount" ] }],
                   rerender() {
@@ -245,17 +245,28 @@ const TrapMenu = kind({
           kind: Button,
           content: "CRAFT",
           classes: 'recipe-buy-button',
+          attributes: { tabindex: "-1" },
+
+          bindings: [{ from: "owner.selected_trap", to: "makes_trap" }],
+          makes_trapChanged(was, is) {
+            for (const key in trap_to_recipe[is])
+              this.observe('app.inv.' + key, this.rerender, this);
+
+            this.rerender();
+          },
+
           handlers: { ontap: 'on_tap' },
           on_tap() {
-            const recipe = trap_to_recipe[this.get("owner.selected_trap")];
-            const inv = this.get('app.$.inventory');
+            const recipe = trap_to_recipe[this.get("makes_trap")];
+            const inv = this.get('app.inv');
             for (const key in recipe) {
-              const itm = inv.find(x => x.get('id') == key);
-              itm.set('count', itm.get('count') - recipe[key]);
+              inv.set(key, inv.get(key) - recipe[key]);
             }
-
-            // console.log({ inv });
-            // this.set('app.$.inventory', new Collection(inv.toJSON()));
+          },
+          rerender() {
+            const recipe = trap_to_recipe[this.get("makes_trap")];
+            const inv = this.get('app.inv');
+            this.setAttribute("disabled", !can_afford(inv, recipe));
           }
         },
       ]
@@ -266,63 +277,193 @@ const TrapMenu = kind({
     { from: "selected_trap", to: "$.info.content",      transform: id => id_to_desc[id] },
   ],
   on_tap(sender, ev) {
-    if (ev.model && ev.model.get)
+    if (ev.model && ev.model.get) {
       this.set('selected_trap', ev.model.get('id'));
+      for (const trap_box of this.$.dataRepeater.$.container.children)
+        trap_box.set('selected', trap_box.model.get('id') == ev.model.get('id'));
+    }
   },
 });
 
 const App = kind({
   name: "SandEnyoBox",
-  components: [{
-    classes: "sidebar",
-    components: [
-      {
-        components: [
-          { content: "inventory", classes: "section-header" },
-          {
-            kind: DataRepeater,
-            components: [ { kind: ItemBox } ],
-            bindings: [ { from: 'app.$.inventory', to: 'collection' } ],
-          }
-        ]
-      },
-      { content: "<br>", allowHtml: true },
-      { kind: TrapMenu, name: 'trap_menu' },
-    ],
-  }]
+  components: [
+    {
+      classes: "sidebar sidesidebar",
+      components: [
+        { tag: "span", content: "vendor", classes: "section-header" },
+        {
+          kind: DataRepeater,
+          collection: [ ID_ITEM_SCREW, ID_ITEM_AXE, ID_ITEM_AIRSTRIKE, ID_ITEM_FLARE ],
+          components: [
+            {
+              classes: 'vendor-good-div',
+              components: [
+                { kind: ItemBox, enable_tooltips: false, count: 1, bindings: [{ from: "owner.model", to: "iid" }] },
+                {
+                  bindings: [{ from: "owner.model", to: "content", transform: id => id_to_desc[id] }],
+                  classes: "section-info",
+                  style: "font-size: 0.75em; width: 9em;"
+                },
+                {
+                  kind: Button,
+                  components: [
+                    { tag: 'span', content: "5", classes: "section-header", style: "margin-right: 0.3em" },
+                    {
+                      tag: "img",
+                      classes: "recipe-ingredient-img",
+                      attributes: { src: "assets/money.svg" },
+                    },
+                 ],
+                  classes: 'recipe-buy-button',
+                  style: "font-size: 0.8em;",
+                  attributes: { tabindex: "-1" },
+                }
+              ]
+            }
+          ]
+        },
+        { content: "<br>", allowHtml: true },
+        {
+          style: "display: flex; align-items: center;",
+          components: [
+            {
+              classes: "section-info",
+              style: "margin-right: 1.5em;",
+              components: [
+                { classes: "section-subheader", content: "the survivalist" },
+                { content: "he's eaten some things he probably shouldn't have" },
+              ]
+            },
+            // { content: "<br>", allowHtml: true },
+            {
+              kind: Button,
+              content: "DISMISS",
+              style: "height: 2.0em",
+              classes: 'recipe-buy-button',
+            }
+          ]
+        },
+      ]
+    },
+    {
+      classes: "sidebar",
+      bindings: [
+        { from: "app.placing", to: "style",
+          transform: id => (id == ID_NONE) ? '' : "filter: opacity(30%); pointer-events: none;" }
+      ],
+      components: [
+        {
+          components: [
+            {
+              components: [
+                { tag: "span", content: "inventory  ", classes: "section-header" },
+                { style: "float:right;", components: [
+                  {
+                    tag: "img",
+                    classes: "recipe-ingredient-img",
+                    attributes: { src: "assets/money.svg" },
+                  },
+                  { tag: "span", content: "10", classes: "section-header" },
+                ]}
+              ]
+            },
+            {
+              kind: DataRepeater,
+              classes: "item-box-div",
+              components: [ { kind: InvItemBox } ],
+              collection: [
+                ID_ITEM_WOOD     , ID_ITEM_SCREW    , ID_ITEM_AXE      , ID_ITEM_FLARE    ,
+                ID_ITEM_AIRSTRIKE, ID_ITEM_PC       , ID_ITEM_BOOK     , ID_NONE          ,
+              /* if you don't wrap them in objects, ID_NONE gets filtered out (because falsey?) */
+              ].map(id => ({ id })),
+            }
+          ]
+        },
+        { content: "<br>", allowHtml: true },
+        { kind: TrapMenu, name: 'trap_menu' },
+      ],
+    },
+    {
+      style: "position: absolute; top: 0em; left: 0.5em;",
+      bindings: [ { from: "app.placing", to: "showing", transform: id => id != ID_NONE } ],
+      components: [
+        {
+          classes: "section-header",
+          style: "color: black;",
+          content: "press escape to cancel",
+        },
+        {
+          tag: "img",
+          classes: "recipe-ingredient-img",
+          attributes: { src: "assets/airstrike.svg" },
+        },
+        {
+          tag: "span",
+          content: " placing airstrike",
+          style: "font-family: monospace; font-size: 1.5em; position: relative; bottom: 0.2em;"
+        },
+      ]
+    },
+    {
+      classes: "time-queue-container",
+      components: [
+        {
+          kind: DataRepeater,
+          components: [ { style: "margin-top: 0.6em", components: [
+            {
+              tag: "span",
+              bindings: [{ from: "owner.model.time", to: "content", transform: x => x + ' ' }],
+              classes: "time-queue-time"
+            },
+            {
+              tag: "img",
+              classes: "time-queue-icon",
+              bindings: [
+                { from: "owner.model.icon", to: "attributes.src", transform: icon => `assets/${icon}.svg` },
+              ],
+            },
+            {
+              tag: "span",
+              bindings: [{ from: "owner.model.text", to: "content", transform: x => ' ' + x }],
+              classes: "time-queue-desc"
+            },
+          ] } ],
+          collection: [
+            { time: "1:35", text: "enemies",  icon: "wave",   },
+            { time: "0:40", text: "vendor",   icon: "vendor", },
+            { time: "0:01", text: "axe done", icon: "axe",    }
+          ],
+        }
+      ]
+    }
+  ]
 });
 
 ready(function() {
   const app = new EnyoApplication({
-    components: [
-      {
-        name: 'inventory',
-        kind: Collection,
-        public: true,
-        models: [
-          { count: 20, id: ID_ITEM_WOOD     },
-          { count: 32, id: ID_ITEM_SCREW    },
-          { count:  2, id: ID_ITEM_AXE      },
-          { count:  1, id: ID_ITEM_FLARE    },
-          { count:  1, id: ID_ITEM_AIRSTRIKE},
-          { count:  3, id: ID_ITEM_PC       },
-          { count:  1, id: ID_ITEM_BOOK     },
-          { count:  0, id: ID_NONE          },
-        ],
-      }
-    ],
+    placing: ID_NONE,
+    inv: new Model({
+      [ID_ITEM_WOOD     ]: 20,
+      [ID_ITEM_SCREW    ]: 32,
+      [ID_ITEM_AXE      ]:  2,
+      [ID_ITEM_FLARE    ]:  1,
+      [ID_ITEM_AIRSTRIKE]:  1,
+      [ID_ITEM_PC       ]:  3,
+      [ID_ITEM_BOOK     ]:  1,
+      [ID_NONE          ]:  0,
+    }),
     view: App
   });
 
-  /* everything worth saving to disk */
-  console.log(app.get('$.inventory.models.0.count'));
+  console.log('inv check', app.get('inv.' + ID_ITEM_WOOD));
   // console.log();
-  app.get('$.inventory.models.0').observe('count', (was, is, prop) => console.log({ was, is, prop }));
+  // app.get('$.inventory.models.0').observe('count', (was, is, prop) => console.log({ was, is, prop }));
   window.onkeydown = () =>  {
-    const model = app.get('$.inventory').at(0);
-    const now = model.get('count');
-    console.log(now);
-    model.set('count', 1+now);
+    app.set('placing', (app.get('placing') == ID_NONE) ? ID_ITEM_AIRSTRIKE : ID_NONE);
+
+    const wood = "inv." + ID_ITEM_WOOD;
+    app.set(wood, 1+app.get(wood));
   }
 
   app.renderInto(document.body);
