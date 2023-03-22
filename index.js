@@ -11,6 +11,45 @@ const Button          = require('enyo/Button'),
       EnyoApplication = require("enyo/Application"),
       EnyoImage       = require('enyo/Image');
 
+/* ticks per second */
+const TPS = 60;
+
+function lerp(v0, v1, t) { return (1 - t) * v0 + t * v1; }
+function inv_lerp(min, max, p) { return (((p) - (min)) / ((max) - (min))); }
+function ease_out_sine(x) {
+  return Math.sin((x * Math.PI) / 2);
+}
+function ease_out_circ(x) {
+  return Math.sqrt(1 - Math.pow(x - 1, 2));
+}
+function ease_out_expo(x) {
+  return x === 1 ? 1 : 1 - Math.pow(2, -10 * x);
+}
+function ease_in_expo(x) {
+  return x === 0 ? 0 : Math.pow(2, 10 * x - 10);
+}
+function point_to_line(point1, point2, x0, y0) {
+  return ((Math.abs((point2.y - point1.y) * x0 - 
+                    (point2.x - point1.x) * y0 + 
+                     point2.x * point1.y - 
+                     point2.y * point1.x)) /
+          (Math.pow((Math.pow(point2.y - point1.y, 2) + 
+                     Math.pow(point2.x - point1.x, 2)), 
+                    0.5)));
+}
+function point_to_point(x0, y0, x1, y1) {
+  const dot = Math.pow(x0 - x1, 2) + Math.pow(y0 - y1, 2);
+  const dist = Math.sqrt(dot);
+  return dist;
+}
+function rad_distance(a, b) {
+  const fmodf = (l, r) => l % r;
+  const difference = fmodf(b - a, Math.PI*2.0),
+        distance = fmodf(2.0 * difference, Math.PI*2.0) - difference;
+  return distance;
+}
+
+
 let _id = 0;
 const ID_NONE           = _id++;
 const ID_ITEM_WOOD      = _id++;
@@ -68,12 +107,12 @@ const id_to_desc = {
   [ID_ITEM_WOOD     ]: "collected from trees, used to make defenses",
   [ID_ITEM_SCREW    ]: "bought from vendors, used to make traps",
   [ID_ITEM_AXE      ]: "used to turn trees into wood for defenses",
-  [ID_ITEM_FLARE    ]: "immediately summons the next vendor/attack",
+  [ID_ITEM_FLARE    ]: "immediately summons the next vendor & attack",
   [ID_ITEM_AIRSTRIKE]: "removes trees and enemies where indicated",
   [ID_ITEM_PC       ]: "used to make automatic turret traps",
   [ID_ITEM_BOOK     ]: "makes bulk deals available from vendors",
   [ID_TRAP_PISTON   ]: "this inexpensive trap stabs in a given direction",
-  [ID_TRAP_SWINGER  ]: "this trap swings between any two angles",
+  [ID_TRAP_SWINGER  ]: "this trap shoots farther, wider, and  faster",
   [ID_TRAP_BLASTER  ]: "similar to the piston trap, but longer range",
   [ID_TRAP_AUTO     ]: "this automatic turret freely rotates and fires",
 };
@@ -100,6 +139,8 @@ const ItemBox = kind({
     { name: 'tooltip', classes: 'item-box-tooltip', tag: 'span' },
   ],
   bindings: [
+    { from: "count", to: "$.img.showing", transform: count => count > 0 },
+    { from: "count", to: "$.count.showing", transform: count => count > 0 },
     { from: 'iid', to: '$.img.src', transform: iid => `assets/${id_to_slug[iid]}.svg` },
     { from: 'iid', to: '$.img.alt', transform: iid => id_to_slug[iid] },
     { from: 'iid', to: '$.img.style'  , transform: iid => 'visibility: ' + ((iid == ID_NONE) ? 'hidden' : 'visible') },
@@ -112,10 +153,39 @@ const ItemBox = kind({
 const InvItemBox = kind({
   kind: ItemBox,
   bindings: [{ from: 'model.id', to: 'iid' }],
+  handlers: { ontap: 'on_tap' },
+  on_tap() {
+    const id = this.get('model.id');
+    if (id == ID_ITEM_AXE || id == ID_ITEM_AIRSTRIKE)
+      this.app.set('placing', id);
+    if (id == ID_ITEM_FLARE) {
+      const timers = this.get("app.timers");
+      /* probably a silly way to filter out axes but meh */
+      let nearest;
+      for (let i = 0; i < timers.length; i++) {
+        const j = timers.length - 1 - i;
+        if (timers.at(j).get("text") == "vendor" ||
+            timers.at(j).get("text") == "enemies") {
+          nearest = j;
+          break;
+        }
+      }
+
+      const soon = Math.floor(TPS*2.5);
+      for (let i = 0; i < timers.length; i++) {
+        if (timers.at(i).get("text") == "vendor" ||
+            timers.at(i).get("text") == "enemies") {
+          timers.at(i).set("ticks", soon);
+        }
+      }
+
+      const inv = this.get("app.inv");
+      inv.set(id, inv.get(id) - 1);
+    }
+  },
 	create() {
 		this.inherited(arguments);
     const id = this.get('model.id');
-    console.log(id);
     if (id != ID_NONE)
       this.binding({ from: 'app.inv.' + id, to: 'count' });
   }
@@ -257,11 +327,7 @@ const TrapMenu = kind({
 
           handlers: { ontap: 'on_tap' },
           on_tap() {
-            const recipe = trap_to_recipe[this.get("makes_trap")];
-            const inv = this.get('app.inv');
-            for (const key in recipe) {
-              inv.set(key, inv.get(key) - recipe[key]);
-            }
+            this.app.set("placing", this.get("makes_trap"));
           },
           rerender() {
             const recipe = trap_to_recipe[this.get("makes_trap")];
@@ -287,37 +353,72 @@ const TrapMenu = kind({
 
 const App = kind({
   name: "SandEnyoBox",
+  classes: "enyo-unselectable",
+  style: "z-index: 1",
   components: [
     {
+      tag: "canvas",
+      style: "z-index: -1; position: absolute",
+    },
+    {
       classes: "sidebar sidesidebar",
+      bindings: [{ from: "app.vendoring", to: "showing" }],
       components: [
         { tag: "span", content: "vendor", classes: "section-header" },
         {
           kind: DataRepeater,
-          collection: [ ID_ITEM_SCREW, ID_ITEM_AXE, ID_ITEM_AIRSTRIKE, ID_ITEM_FLARE ],
+          collection: [
+            { cost:  3, count: 2, id: ID_ITEM_SCREW },
+            { cost: 10, count: 1, id: ID_ITEM_AXE },
+            { cost: 20, count: 1, id: ID_ITEM_AIRSTRIKE },
+            { cost: 10, count: 1, id: ID_ITEM_FLARE },
+            { cost: 40, count: 1, id: ID_ITEM_PC }
+          ],
           components: [
             {
               classes: 'vendor-good-div',
               components: [
-                { kind: ItemBox, enable_tooltips: false, count: 1, bindings: [{ from: "owner.model", to: "iid" }] },
+                { kind: ItemBox, enable_tooltips: false, bindings: [
+                  { from: "owner.model.count", to: "count" },
+                  { from: "owner.model.id"   , to: "iid" }
+                ]},
                 {
-                  bindings: [{ from: "owner.model", to: "content", transform: id => id_to_desc[id] }],
+                  bindings: [{ from: "owner.model.id", to: "content", transform: id => id_to_desc[id] }],
                   classes: "section-info",
                   style: "font-size: 0.75em; width: 9em;"
                 },
                 {
                   kind: Button,
+                  bindings: [
+                    { from: "app.money", to: "can_afford",
+                      transform(money) { return this.get("owner.model.cost") > money; } }
+                  ],
+                  can_affordChanged(was, is) {
+                    /* TODO: why doesn't writing directly to "disabled" work? */
+                    this.setAttribute("disabled", is);
+                  },
                   components: [
-                    { tag: 'span', content: "5", classes: "section-header", style: "margin-right: 0.3em" },
+                    { tag: 'span', classes: "section-header", style: "margin-right: 0.3em",
+                      bindings: [{ from: "owner.model.cost", to: "content", }] },
                     {
                       tag: "img",
                       classes: "recipe-ingredient-img",
                       attributes: { src: "assets/money.svg" },
                     },
                  ],
-                  classes: 'recipe-buy-button',
-                  style: "font-size: 0.8em;",
-                  attributes: { tabindex: "-1" },
+                 handlers: { ontap: 'on_tap' },
+                 on_tap() {
+                   const cost = this.get("owner.model.cost");
+                   const count = this.get("owner.model.count");
+                   const id = this.get("owner.model.id");
+                   this.set('app.money', this.get('app.money') - cost);
+                   const inv = this.get('app.inv');
+                   inv.set(id, inv.get(id) + count);
+                   // this.owner.render();
+                 },
+                 classes: 'recipe-buy-button vendor-buy-button',
+                 style: "font-size: 0.8em;",
+                 attributes: { tabindex: "-1" },
                 }
               ]
             }
@@ -339,6 +440,10 @@ const App = kind({
             {
               kind: Button,
               content: "DISMISS",
+              handlers: { ontap: 'on_tap' },
+              on_tap() {
+                this.app.set("vendoring", 0);
+              },
               style: "height: 2.0em",
               classes: 'recipe-buy-button',
             }
@@ -347,10 +452,12 @@ const App = kind({
       ]
     },
     {
+      name: "ui_sidebar",
       classes: "sidebar",
       bindings: [
         { from: "app.placing", to: "style",
-          transform: id => (id == ID_NONE) ? '' : "filter: opacity(30%); pointer-events: none;" }
+          transform: id => (id == ID_NONE) ? '' : "filter: opacity(30%); pointer-events: none;" },
+        { from: "app.game_over", to: "showing", transform: over => !over }
       ],
       components: [
         {
@@ -364,7 +471,7 @@ const App = kind({
                     classes: "recipe-ingredient-img",
                     attributes: { src: "assets/money.svg" },
                   },
-                  { tag: "span", content: "10", classes: "section-header" },
+                  { tag: "span", classes: "section-header", bindings: [{ from: "app.money", to: "content" }] },
                 ]}
               ]
             },
@@ -374,7 +481,7 @@ const App = kind({
               components: [ { kind: InvItemBox } ],
               collection: [
                 ID_ITEM_WOOD     , ID_ITEM_SCREW    , ID_ITEM_AXE      , ID_ITEM_FLARE    ,
-                ID_ITEM_AIRSTRIKE, ID_ITEM_PC       , ID_ITEM_BOOK     , ID_NONE          ,
+                ID_ITEM_AIRSTRIKE, ID_ITEM_PC       , ID_NONE          , ID_NONE          ,
               /* if you don't wrap them in objects, ID_NONE gets filtered out (because falsey?) */
               ].map(id => ({ id })),
             }
@@ -385,7 +492,18 @@ const App = kind({
       ],
     },
     {
-      style: "position: absolute; top: 0em; left: 0.5em;",
+      style: "position: absolute; top: 0em; left: 0.5em; pointer-events: none;",
+      bindings: [ { from: "app.game_over", to: "showing" } ],
+      components: [
+        {
+          classes: "section-header",
+          style: "color: black;",
+          content: "game over",
+        },
+      ]
+    },
+    {
+      style: "position: absolute; top: 0em; left: 0.5em; pointer-events: none;",
       bindings: [ { from: "app.placing", to: "showing", transform: id => id != ID_NONE } ],
       components: [
         {
@@ -396,11 +514,11 @@ const App = kind({
         {
           tag: "img",
           classes: "recipe-ingredient-img",
-          attributes: { src: "assets/airstrike.svg" },
+          bindings: [{ from: "app.placing", to: "attributes.src", transform: id => `assets/${id_to_slug[id]}.svg` }]
         },
         {
           tag: "span",
-          content: " placing airstrike",
+          bindings: [{ from: "app.placing", to: "content", transform: id => ' placing ' + id_to_name[id] }],
           style: "font-family: monospace; font-size: 1.5em; position: relative; bottom: 0.2em;"
         },
       ]
@@ -410,30 +528,31 @@ const App = kind({
       components: [
         {
           kind: DataRepeater,
-          components: [ { style: "margin-top: 0.6em", components: [
-            {
-              tag: "span",
-              bindings: [{ from: "owner.model.time", to: "content", transform: x => x + ' ' }],
-              classes: "time-queue-time"
-            },
-            {
-              tag: "img",
-              classes: "time-queue-icon",
-              bindings: [
-                { from: "owner.model.icon", to: "attributes.src", transform: icon => `assets/${icon}.svg` },
-              ],
-            },
-            {
-              tag: "span",
-              bindings: [{ from: "owner.model.text", to: "content", transform: x => ' ' + x }],
-              classes: "time-queue-desc"
-            },
-          ] } ],
-          collection: [
-            { time: "1:35", text: "enemies",  icon: "wave",   },
-            { time: "0:40", text: "vendor",   icon: "vendor", },
-            { time: "0:01", text: "axe done", icon: "axe",    }
-          ],
+          name: "time_queue",
+          bindings: [{ from: "app.timers", to: "collection" }],
+          components: [{
+            style: "margin-top: 0.6em",
+            // bindings: [{ from: "model.time", to: "showing", transform: t => t > 0 }],
+            components: [
+              {
+                tag: "span",
+                bindings: [{ from: "owner.model.time", to: "content", transform: x => x + ' ' }],
+                classes: "time-queue-time"
+              },
+              {
+                tag: "img",
+                classes: "time-queue-icon",
+                bindings: [
+                  { from: "owner.model.icon", to: "attributes.src", transform: icon => `assets/${icon}.svg` },
+                ],
+              },
+              {
+                tag: "span",
+                bindings: [{ from: "owner.model.text", to: "content", transform: x => ' ' + x }],
+                classes: "time-queue-desc"
+              },
+            ]
+          }],
         }
       ]
     }
@@ -441,32 +560,579 @@ const App = kind({
 });
 
 ready(function() {
+  let pending_timers = [];
   const app = new EnyoApplication({
     placing: ID_NONE,
+    vendoring: false,
+    game_over: false,
+    hp: 9,
+
+    money: 10,
+    timers: new Collection([
+      { time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" },
+      { time: 1, ticks: 60*TPS, text: "vendor", icon: "vendor" },
+      // { time: "1:35", text: "enemies",  icon: "wave",   },
+      // { time: "0:40", text: "vendor",   icon: "vendor", },
+      // { time: "0:01", text: "axe done", icon: "axe",    }
+    ]),
     inv: new Model({
       [ID_ITEM_WOOD     ]: 20,
       [ID_ITEM_SCREW    ]: 32,
       [ID_ITEM_AXE      ]:  2,
       [ID_ITEM_FLARE    ]:  1,
       [ID_ITEM_AIRSTRIKE]:  1,
-      [ID_ITEM_PC       ]:  3,
-      [ID_ITEM_BOOK     ]:  1,
+      [ID_ITEM_PC       ]:  0,
+      [ID_ITEM_BOOK     ]:  0,
       [ID_NONE          ]:  0,
     }),
     view: App
   });
 
-  console.log('inv check', app.get('inv.' + ID_ITEM_WOOD));
-  // console.log();
-  // app.get('$.inventory.models.0').observe('count', (was, is, prop) => console.log({ was, is, prop }));
-  window.onkeydown = () =>  {
-    app.set('placing', (app.get('placing') == ID_NONE) ? ID_ITEM_AIRSTRIKE : ID_NONE);
+  app.renderInto(document.body);
+  app.inv.set(ID_ITEM_PC, 0);
 
-    const wood = "inv." + ID_ITEM_WOOD;
-    app.set(wood, 1+app.get(wood));
+  const canvas = document.getElementsByTagName("canvas")[0];
+  const ctx = canvas.getContext("2d");
+  (window.onresize = () => {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  })();
+
+  let mouse_x = 0;
+  let mouse_y = 0;
+  let mouse_down = 0;
+  window.onkeydown = ev => {
+    if (app.placing && ev.key == 'Escape')
+      app.set('placing', ID_NONE);
+  }
+  canvas.onmousedown = () => mouse_down = 1;
+  canvas.onmouseup   = () => mouse_down = 0;
+  window.onmousemove = ev => {
+    mouse_x = ev.pageX;
+    mouse_y = ev.pageY;
+  };
+
+  const roads = [];
+  const road_ends = [];
+  {
+    const road = (from_x, from_y, to_x, to_y) => roads.push({
+      from: { x: from_x, y: from_y },
+        to: { x:   to_x, y:   to_y }
+    });
+    const road_end = (x, y) => road_ends.push({ x, y });
+
+    let last_y;
+    for (let i = 0; i <= 3; i++) {
+      const y = lerp(-0.3, 0.3, i/3);
+
+      if (last_y) {
+        const x = (i % 2) ? 0.4 : -0.4;
+        road_end(x,      y);
+        road_end(x, last_y);
+        road(x, last_y,
+             x,      y);
+      }
+
+      if (i % 2)
+        road( 0.4, y,
+             -0.4, y);
+      else
+        road(-0.4, y,
+              0.4, y);
+
+      last_y = y;
+    }
+
+  }
+  const road_dist = roads.reduce((a, { from, to }) => {
+    return a + point_to_point(from.x, from.y, to.x, to.y);
+  }, 0);
+
+  const trees = [];
+  const tick_timeouts = [];
+  let _i = 0;
+  while (trees.length < 50 && _i < 1e7) {
+    _i++;
+    let ret = {
+      x: lerp(-0.5, 0.5, Math.random()),
+      y: lerp(-0.5, 0.5, Math.random()),
+      rot: Math.random() * Math.PI*2,
+      seed: Math.random()
+    };
+
+    /* brute force the constraints; very monte carlo */
+    for (const { x, y } of trees) {
+      if (point_to_point(x, y, ret.x, ret.y) < 0.10) {
+        ret = undefined;
+        break;
+      }
+    }
+    if (ret == undefined) continue;
+
+    for (const { from, to } of roads) {
+      if (point_to_line(from, to, ret.x, ret.y) < 0.06) {
+        ret = undefined;
+        break;
+      }
+    }
+    if (ret == undefined) continue;
+
+    trees.push(ret);
   }
 
-  app.renderInto(document.body);
+  const traps = [
+    { x: -0.30, y: -0.20, rot: Math.PI/2, ticks: 0, kind: ID_TRAP_PISTON }
+  ];
+  const enemies = [];
+  const projectiles = [];
+
+  let screen_to_world;
+  function tick() {
+    // if (screen_to_world) {
+    //   let mouse = new DOMPoint(mouse_x, mouse_y, 0, 1).matrixTransform(screen_to_world);
+    // }
+    const cleanups = [];
+
+    /* sorting the collection directly caused error in DataRepeater
+       also calling remove without the sort causes error in DataRepeater */
+
+    const tq = app.get("$.sandEnyoBox.$.time_queue");
+    for (let i = 0; i < app.timers.length; i++)
+      tq.remove(0);
+
+    const models = app.timers.empty({ destroy: false });
+    for (const pending_timer of pending_timers) {
+      models.push(new Model(pending_timer));
+    }
+    pending_timers = [];
+    models.sort((a, b) => {
+      if (b.attributes.ticks == a.attributes.ticks) {
+        b.cheese = b.cheese ? b.cheese : Math.random();
+        a.cheese = a.cheese ? a.cheese : Math.random();
+        return b.cheese - a.cheese;
+      }
+      return b.attributes.ticks - a.attributes.ticks
+    });
+
+    for (const tt of tick_timeouts) {
+      tt.ticks--;
+      if (tt.ticks == 0) {
+        tt.fn();
+        cleanups.push(() => tick_timeouts.splice(tick_timeouts.indexOf(tt), 1));
+      }
+    }
+
+    for (const t of models) {
+      t.set('ticks', t.get('ticks')-1);
+      if (t.get('ticks') < 0) continue;
+
+      let secs = Math.floor(t.get('ticks') / TPS);
+      secs = (''+secs).padStart(2, '0');
+      // let sub = 1 - ((t.get('ticks') / TPS) - secs)
+      //sub = (''+sub.toFixed(2)).padStart(2, '0').substr(2);
+      // t.set('time', secs+':'+sub);
+      t.set('time', '0:' + secs);
+
+      if (t.get('ticks') <= 0) {
+
+        /* TODO: enum */
+        if (t.get("text") == "enemies") {
+          if (window.wave_size == undefined)
+            window.wave_size = 3;
+          else
+            window.wave_size++;
+
+          let enemy_count = 0;
+          console.log(`spawning wave of ${window.wave_size} enemies`);
+          (function enemy() {
+            enemy_count++;
+            if (enemy_count <= window.wave_size)
+              tick_timeouts.push({ fn: enemy, ticks: Math.floor(0.3*TPS) });
+
+            enemies.push({
+              x: roads[0].from.x,
+              y: roads[0].from.y,
+              ticks: 0,
+            });
+
+          })();
+
+          pending_timers.push({ time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" });
+        }
+
+        if (t.get("text") == "vendor") {
+          console.log("vendoring");
+          app.set("vendoring", true);
+          app.set("placing", ID_NONE);
+          pending_timers.push({ time: 1, ticks: 60*TPS, text: "vendor", icon: "vendor" });
+        }
+
+        if (t.get("text") == "axe done") {
+          const inv = app.inv;
+          inv.set(ID_ITEM_AXE, inv.get(ID_ITEM_AXE) + 1);
+          inv.set(ID_ITEM_WOOD, inv.get(ID_ITEM_WOOD) + Math.floor(lerp(3, 5, Math.random())));
+
+        }
+      }
+      else {
+        app.timers.add(t);
+        tq.add(t);
+      }
+    }
+
+    const kill_p = p => cleanups.push(() => projectiles.splice(projectiles.indexOf(p), 1));
+    const kill_e = e => cleanups.push(() => enemies    .splice(enemies    .indexOf(e), 1));
+    for (const p of projectiles) {
+
+      p.ticks++;
+      let JOURNEY_TICKS = 0.5 * TPS;
+      if (p.kind == ID_TRAP_SWINGER) JOURNEY_TICKS = 1.0 * TPS;
+      if (p.kind == ID_TRAP_BLASTER) JOURNEY_TICKS = 1.4 * TPS;
+      if (p.kind == ID_TRAP_AUTO   ) JOURNEY_TICKS = 1.4 * TPS;
+
+      if (p.ticks > JOURNEY_TICKS) { kill_p(p); continue; }
+
+      /* quadratic perf goes weee */
+      for (const e of enemies) {
+        const dist = point_to_point(p.x, p.y, e.x, e.y);
+        if (dist < 0.04) {
+          kill_p(p);
+          kill_e(e);
+          app.set('money', app.get('money')+1);
+          break;
+        }
+      }
+      
+      p.x += p.vx * 0.003;
+      p.y += p.vy * 0.003;
+    }
+
+    for (const e of enemies) {
+      e.ticks++;
+      const JOURNEY_TICKS = 25 * TPS;
+      if (e.ticks > JOURNEY_TICKS) {
+        app.set("hp", app.get("hp") - 1);
+        if (app.get("hp") == 0)
+          app.set("game_over", true);
+        kill_e(e);
+        continue;
+      }
+
+      {
+        let t = e.ticks / JOURNEY_TICKS;
+        t *= road_dist;
+        let stretch;
+        for (const i in roads) {
+          const { from, to } = roads[i];
+          const dist = point_to_point(from.x, from.y, to.x, to.y);
+          if (t < dist) {
+            t = t / dist;
+            stretch = roads[i];
+            break;
+          }
+          t -= dist;
+        }
+
+        e.x = lerp(stretch.from.x, stretch.to.x, t);
+        e.y = lerp(stretch.from.y, stretch.to.y, t);
+      }
+    }
+
+    for (const trap of traps) {
+      trap.ticks++;
+
+      const shoot = (angle=0) => {
+        projectiles.push({
+          kind: trap.kind,
+          x: trap.x,
+          y: trap.y,
+          rot: trap.rot,
+          vx: -Math.cos(trap.rot+angle),
+          vy: -Math.sin(trap.rot+angle),
+          ticks: 0,
+        });
+      }
+
+      let secs = 0.5;
+      if (trap.kind == ID_TRAP_PISTON)  secs = 1.0;
+      if (trap.kind == ID_TRAP_SWINGER) secs = 0.6;
+      if (trap.kind == ID_TRAP_BLASTER) secs = 0.3;
+      if (trap.kind == ID_TRAP_AUTO)    secs = 0.1;
+      const FIRE_INTERVAL = Math.floor(TPS*secs);
+
+      if (trap.kind == ID_TRAP_PISTON) {
+        if ((trap.ticks % FIRE_INTERVAL) == 0)
+          shoot();
+      }
+
+      if (trap.kind == ID_TRAP_SWINGER) {
+        if ((trap.ticks % FIRE_INTERVAL) == 0)
+          shoot(Math.sin(trap.ticks/(TPS*0.5))* 0.1*Math.PI*2);
+      }
+
+      if (trap.kind == ID_TRAP_BLASTER) {
+        if ((trap.ticks % FIRE_INTERVAL) == 0)
+          shoot();
+      }
+
+      if (trap.kind == ID_TRAP_AUTO && enemies.length > 0) {
+        if ((trap.ticks % FIRE_INTERVAL) == 0)
+          shoot();
+
+        const nearest = enemies.reduce((best, e) => {
+          const dist = point_to_point(e.x, e.y, trap.x, trap.y);
+          return (dist < best.dist) ? { dist, e } : best;
+        });
+
+        const ideal_rot = Math.atan2(trap.y - nearest.y, trap.x - nearest.x);
+        const distance = rad_distance(trap.rot, ideal_rot);
+        const force = Math.min(0.04, Math.abs(distance));
+        trap.rot += force*Math.sign(distance);
+      }
+    }
+
+    for (const cleanup_fn of cleanups) cleanup_fn();
+  }
+
+  let last, tick_acc = 0;
+  requestAnimationFrame(function frame(now) {
+    requestAnimationFrame(frame);
+
+    let dt = 0;
+    if (last) dt = now - last;
+    last = now;
+
+    const TICK_MS = 1000/TPS;
+    dt = Math.min(dt, TICK_MS*10);
+    if (!app.get("vendoring") && !app.get("game_over"))
+      tick_acc += dt;
+    while (tick_acc > TICK_MS) {
+      tick_acc -= TICK_MS;
+      tick();
+    }
+
+    ctx.save();
+
+    ctx.fillStyle = "#71b980";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // const width = 
+    let sidebar = document.getElementById("application_sandEnyoBox_ui_sidebar");
+    if (!sidebar) return;
+    sidebar = sidebar.getBoundingClientRect();
+
+    const width = (canvas.width - sidebar.width);
+    const height = canvas.height;
+    const cx = width/2;
+    const cy = height/2;
+
+    ctx.translate(cx, cy);
+    const scale = Math.min(width, height);
+    ctx.scale(scale, scale);
+    // ctx.rotate(now * 0.001);
+    screen_to_world = ctx.getTransform().invertSelf();
+
+    if (0) {
+      const size = 0.06;
+      const x = -0.45;
+      const y =  0.3;
+
+      ctx.fillStyle = "#76609f";
+      ctx.fillRect(x + size/-2, y + size/-2, size, size);
+    }
+    
+    let mouse = new DOMPoint(mouse_x, mouse_y, 0, 1).matrixTransform(screen_to_world);
+    for (const tree of trees) {
+      const { x, y, rot, seed } = tree;
+      const size = 0.04;
+
+      for (let i = 0; i < 2; i++) {
+        if (app.placing == ID_ITEM_AXE) {
+          i = +!i;
+        }
+        ctx.fillStyle = i ? "#609f6d" : "#54895f" ;
+
+        if (app.placing == ID_ITEM_AXE && !tree.being_chopped) {
+          const hover = point_to_point(mouse.x, mouse.y, x, y) < size*2;
+          ctx.fillStyle = "#9f6060"
+
+          if (mouse_down && hover) {
+            const ticks = 15*TPS;
+            pending_timers.push({
+              time: 1, ticks,
+              text: "axe done", icon: "axe",
+            });
+            tree.being_chopped = 1;
+            tick_timeouts.push({
+              fn: () => trees.splice(trees.indexOf(tree), 1),
+              ticks
+            });
+
+            const key = ID_ITEM_AXE;
+            const inv = app.inv;
+            inv.set(key, inv.get(key) - 1);
+
+            app.set('placing', ID_NONE);
+          }
+        }
+
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(rot + (0.1*seed + 0.3)*Math.PI*i);
+        if (tree.being_chopped) {
+          const scale = 1 + 0.2*Math.sin(0.01*now);
+          ctx.scale(scale, scale);
+        }
+        ctx.fillRect(size/-2, size/-2, size, size);
+        ctx.restore();
+      }
+    }
+
+    for (let i = 0; i < 2; i++) {
+      const ROAD_THICK = i ? 0.0525 : 0.065;
+      const ROAD_COLOR = i ? "#6575a6" : "#57658f";
+      for (const { from, to } of roads) {
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(  to.x,   to.y);
+        ctx.lineWidth = ROAD_THICK;
+        ctx.strokeStyle = ROAD_COLOR;
+        ctx.stroke();
+      }
+      for (const {x, y} of road_ends) {
+        ctx.beginPath();
+        ctx.arc(x, y, (ROAD_THICK - 0.0004)/2, 0, 2 * Math.PI);
+        ctx.fillStyle = ROAD_COLOR;
+        ctx.fill();
+      }
+    }
+
+    for (const { x, y } of enemies) {
+      const size = 0.04;
+      ctx.fillStyle = "#9f6060";
+      ctx.fillRect(x + size/-2, y + size/-2, size, size);
+    }
+
+    {
+      const x = -0.45;
+      const y =  0.3;
+      const size = 0.06;
+
+      let hp = 0;
+      for (let i = 0; i < 3; i++)
+        for (let j = 0; j < 3; j++) {
+          if (hp > app.get("hp")) continue;
+          hp++;
+
+          ctx.fillStyle = "#76609f";
+          ctx.fillRect(
+            x + size*lerp(-0.5, 0.5, j/3),
+            y + size*lerp(-0.5, 0.5, i/3),
+            size/3 * 0.8,
+            size/3 * 0.8
+          );
+        }
+    }
+
+    for (const { x, y, rot } of projectiles) {
+      const size = 0.015;
+      ctx.fillStyle = "#9f6060";
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(rot);
+      ctx.fillRect(size/-2, size/-2, size, size);
+      ctx.restore();
+    }
+
+    for (const trap of traps) {
+      const { x, y, rot } = trap;
+
+      const size = 0.04;
+      const hover = !app.placing && point_to_point(mouse.x, mouse.y, x, y) < size*2;
+      if (hover)
+        ctx.fillStyle = "#9680bf";
+      else
+        ctx.fillStyle = "#76609f";
+
+      if (hover && mouse_down)
+        trap.rot = Math.atan2(y - mouse.y, x - mouse.x);
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(rot);
+      ctx.fillRect(size/-2, size/-2, size, size);
+      ctx.restore();
+    }
+
+    if (
+      app.placing == ID_TRAP_PISTON ||
+      app.placing == ID_TRAP_SWINGER ||
+      app.placing == ID_TRAP_BLASTER ||
+      app.placing == ID_TRAP_AUTO
+      ) {
+      const rot = 0;
+      const x = mouse.x;
+      const y = mouse.y;
+
+      if (mouse_down) {
+        const placing = app.get('placing');
+        traps.push({ x, y, rot, ticks: 0, kind: placing });
+
+        const recipe = trap_to_recipe[placing];
+        const inv = app.inv;
+        for (const key in recipe) {
+          inv.set(key, inv.get(key) - recipe[key]);
+        }
+
+        app.set('placing', ID_NONE);
+      }
+
+      const size = 0.04;
+      ctx.fillStyle = "#9680bf";
+
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(rot);
+      ctx.fillRect(size/-2, size/-2, size, size);
+      ctx.restore();
+    }
+
+    if (app.placing == ID_ITEM_AIRSTRIKE) {
+      const BLAST_RADIUS = 0.365;
+
+      const { x, y } = mouse;
+      ctx.beginPath();
+      ctx.arc(x, y, (BLAST_RADIUS - 0.0004)/2, 0, 2 * Math.PI);
+      ctx.strokeStyle = "#a6656d";
+      ctx.lineWidth = 0.01;
+      ctx.setLineDash([0.05, 0.05]);
+      ctx.stroke();
+      ctx.setLineDash([0]);
+
+      if (mouse_down) {
+        /* quadratic perf goes weee */
+        for (const e of enemies) {
+          const dist = point_to_point(x, y, e.x, e.y);
+          if (dist < BLAST_RADIUS*0.8) {
+            if (Math.random() < 0.3) app.set('money', app.get('money')+1);
+            setTimeout(() => enemies.splice(enemies.indexOf(e), 1));
+          }
+        }
+
+        for (const t of trees) {
+          const dist = point_to_point(x, y, t.x, t.y);
+          if (dist < BLAST_RADIUS*0.6) {
+            app.set('inv.' + ID_ITEM_WOOD, app.get('inv.' + ID_ITEM_WOOD)+1)
+            setTimeout(() => trees.splice(trees.indexOf(t), 1));
+          }
+        }
+
+        app.set('inv.' + ID_ITEM_AIRSTRIKE, app.get('inv.' + ID_ITEM_AIRSTRIKE)-1)
+        app.set("placing", ID_NONE);
+      }
+    }
+
+    ctx.restore();
+  });
 
   console.log('Hello World!');
 });

@@ -131,6 +131,10 @@ vim: sw=2 ts=2 expandtab smartindent ft=css
 }
 .recipe-buy-button:active { transform: scale(1.05); }
 
+.vendor-buy-button {
+  width: 7em;
+}
+
 .sidebar {
   width: 20em;
   height: 100%;
@@ -160,7 +164,7 @@ vim: sw=2 ts=2 expandtab smartindent ft=css
 }
 .time-queue-time {
   font-size: 1.6em;
-  color: hsl(0, 0%, 30%);
+  color: hsl(0, 0%, 25%);
 }
 .time-queue-icon {
   width: 1.5em;
@@ -175,5 +179,5 @@ vim: sw=2 ts=2 expandtab smartindent ft=css
   position: relative;
   bottom: 0.2em;
   font-weight: bold;
-  color: hsl(0, 0%, 45%);
+  color: hsl(0, 0%, 35%);
 }
