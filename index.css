@@ -16,7 +16,9 @@ vim: sw=2 ts=2 expandtab smartindent ft=css
   border: 0.25em solid hsl(0, 0%, 20%);
   border-color: hsl(0, 0%, 23%) hsl(0, 0%, 34%) hsl(0, 0%, 34%) hsl(0, 0%, 23%);
 }
-.item-box:active { border-color: hsl(0, 0%, 45%) hsl(0, 0%, 21%) hsl(0, 0%, 21%) hsl(0, 0%, 45%); }
+.item-box:active {
+  border-color: hsl(0, 0%, 45%) hsl(0, 0%, 21%) hsl(0, 0%, 21%) hsl(0, 0%, 45%);
+}
 .item-box:active > img { transform: scale(1.05); }
 .item-box-tooltip {
   background-color: hsl(0, 0%, 10%);
@@ -56,11 +58,11 @@ vim: sw=2 ts=2 expandtab smartindent ft=css
 }
 
 .trap-box {
-  width: 4em;
-  height: 4em;
+  width: 3.5em;
+  height: 3.5em;
   border-radius: 0.5em;
   padding: 0.35em;
-  margin: 0.5em;
+  margin: 0.25em;
   position: relative;
   border: 0.2em solid hsl(0, 0%, 20%);
   filter: grayscale(90%);

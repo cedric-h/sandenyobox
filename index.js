@@ -28,20 +28,23 @@ function ease_out_expo(x) {
 function ease_in_expo(x) {
   return x === 0 ? 0 : Math.pow(2, 10 * x - 10);
 }
-function point_to_line(point1, point2, x0, y0) {
-  return ((Math.abs((point2.y - point1.y) * x0 - 
-                    (point2.x - point1.x) * y0 + 
-                     point2.x * point1.y - 
-                     point2.y * point1.x)) /
-          (Math.pow((Math.pow(point2.y - point1.y, 2) + 
-                     Math.pow(point2.x - point1.x, 2)), 
-                    0.5)));
+function point_to_point2(x0, y0, x1, y1) {
+  return Math.pow(x0 - x1, 2) + Math.pow(y0 - y1, 2);
 }
-function point_to_point(x0, y0, x1, y1) {
-  const dot = Math.pow(x0 - x1, 2) + Math.pow(y0 - y1, 2);
-  const dist = Math.sqrt(dot);
-  return dist;
+function point_to_line2(v, w, p_x, p_y) {
+  const l2 = point_to_point2(v.x, v.y, w.x, w.y);
+  if (l2 == 0) return point_to_point2(p_x, p_y, v.x, v.y);
+
+  let t = ((p_x - v.x) * (w.x - v.x) + (p_y - v.y) * (w.y - v.y)) / l2;
+  t = Math.max(0, Math.min(1, t));
+  return point_to_point2(
+    p_x, p_y,
+    v.x + t * (w.x - v.x),
+    v.y + t * (w.y - v.y)
+  );
 }
+function point_to_point(x0, y0, x1, y1) { return Math.sqrt(point_to_point2(x0, y0, x1, y1)); }
+function point_to_line (from, to, x, y) { return Math.sqrt(point_to_line2 (from, to, x, y)); }
 function rad_distance(a, b) {
   const fmodf = (l, r) => l % r;
   const difference = fmodf(b - a, Math.PI*2.0),
@@ -59,6 +62,7 @@ const ID_ITEM_FLARE     = _id++;
 const ID_ITEM_AIRSTRIKE = _id++;
 const ID_ITEM_PC        = _id++;
 const ID_ITEM_BOOK      = _id++;
+const ID_TRAP_WALL      = _id++;
 const ID_TRAP_PISTON    = _id++;
 const ID_TRAP_SWINGER   = _id++;
 const ID_TRAP_BLASTER   = _id++;
@@ -83,6 +87,7 @@ const id_to_slug = {
   [ID_ITEM_AIRSTRIKE]: "airstrike",
   [ID_ITEM_PC       ]: "targeting_computer",
   [ID_ITEM_BOOK     ]: "big_book_of_bargains",
+  [ID_TRAP_WALL     ]: "trap_wall",
   [ID_TRAP_PISTON   ]: "trap_piston",
   [ID_TRAP_SWINGER  ]: "trap_swinger",
   [ID_TRAP_BLASTER  ]: "trap_blaster",
@@ -97,6 +102,7 @@ const id_to_name = {
   [ID_ITEM_AIRSTRIKE]: "airstrike",
   [ID_ITEM_PC       ]: "targeting computer",
   [ID_ITEM_BOOK     ]: "big book of bargains",
+  [ID_TRAP_WALL     ]:  "wall \"trap\"",
   [ID_TRAP_PISTON   ]:  "piston trap",
   [ID_TRAP_SWINGER  ]: "swinger trap",
   [ID_TRAP_BLASTER  ]: "blaster trap",
@@ -111,12 +117,14 @@ const id_to_desc = {
   [ID_ITEM_AIRSTRIKE]: "removes trees and enemies where indicated",
   [ID_ITEM_PC       ]: "used to make automatic turret traps",
   [ID_ITEM_BOOK     ]: "makes bulk deals available from vendors",
+  [ID_TRAP_WALL     ]: "can funnel enemies towards more lethal traps",
   [ID_TRAP_PISTON   ]: "this inexpensive trap stabs in a given direction",
   [ID_TRAP_SWINGER  ]: "this trap shoots farther, wider, and  faster",
   [ID_TRAP_BLASTER  ]: "similar to the piston trap, but longer range",
   [ID_TRAP_AUTO     ]: "this automatic turret freely rotates and fires",
 };
 const trap_to_recipe = {
+  [ID_TRAP_WALL     ]: { [ID_ITEM_WOOD]:  5, [ID_ITEM_SCREW]:  1, [ID_ITEM_PC]: 0 },
   [ID_TRAP_PISTON   ]: { [ID_ITEM_WOOD]: 10, [ID_ITEM_SCREW]:  5, [ID_ITEM_PC]: 0 },
   [ID_TRAP_SWINGER  ]: { [ID_ITEM_WOOD]: 15, [ID_ITEM_SCREW]: 10, [ID_ITEM_PC]: 0 },
   [ID_TRAP_BLASTER  ]: { [ID_ITEM_WOOD]: 25, [ID_ITEM_SCREW]: 30, [ID_ITEM_PC]: 0 },
@@ -226,7 +234,7 @@ const TrapBox = kind({
 const TrapMenu = kind({
   name: "TrapMenu",
   handlers: { ontap: 'on_tap' },
-  selected_trap: ID_TRAP_PISTON,
+  selected_trap: ID_TRAP_WALL,
   components: [
     { content: "traps", classes: "section-header" },
     {
@@ -242,6 +250,7 @@ const TrapMenu = kind({
         }],
       } ],
       collection: new Collection([
+        { id: ID_TRAP_WALL     },
         { id: ID_TRAP_PISTON   },
         { id: ID_TRAP_SWINGER  },
         { id: ID_TRAP_BLASTER  },
@@ -569,7 +578,7 @@ ready(function() {
 
     money: 10,
     timers: new Collection([
-      { time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" },
+      // { time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" },
       { time: 1, ticks: 60*TPS, text: "vendor", icon: "vendor" },
       // { time: "1:35", text: "enemies",  icon: "wave",   },
       // { time: "0:40", text: "vendor",   icon: "vendor", },
@@ -614,7 +623,7 @@ ready(function() {
 
   const roads = [];
   const road_ends = [];
-  {
+  if (0) {
     const road = (from_x, from_y, to_x, to_y) => roads.push({
       from: { x: from_x, y: from_y },
         to: { x:   to_x, y:   to_y }
@@ -648,8 +657,25 @@ ready(function() {
     return a + point_to_point(from.x, from.y, to.x, to.y);
   }, 0);
 
+  const PORTAL_X = 0;
+  const PORTAL_Y = 0;
   const trees = [];
-  const tick_timeouts = [];
+  const tick_timeouts = []; /* TODO: make serializable */
+  let $ = () => Math.random() * 0.006;
+  const traps = [
+    { x:  0.05 + $(), y: -0.07 + $(), kind: ID_TRAP_WALL },
+    { x:  0.05 + $(), y:  0.07 + $(), kind: ID_TRAP_WALL },
+    { x: -0.07 + $(), y:  0.04 + $(), kind: ID_TRAP_WALL },
+    { x: -0.07 + $(), y: -0.04 + $(), kind: ID_TRAP_WALL },
+    // { x: -0.30, y: -0.20, rot: Math.PI/2, ticks: 0, kind: ID_TRAP_PISTON }
+  ];
+  const enemies = [];
+  const projectiles = [];
+  $ = i => ({ x: traps[i].x, y: traps[i].y });
+  const walls = [{ from: $(0), to: $(1) },
+                 { from: $(1), to: $(2) },
+                 { from: $(0), to: $(3) },];
+
   let _i = 0;
   while (trees.length < 50 && _i < 1e7) {
     _i++;
@@ -669,6 +695,9 @@ ready(function() {
     }
     if (ret == undefined) continue;
 
+    if (point_to_point(PORTAL_X, PORTAL_Y, ret.x, ret.y) < 0.10)
+      continue;
+
     for (const { from, to } of roads) {
       if (point_to_line(from, to, ret.x, ret.y) < 0.06) {
         ret = undefined;
@@ -679,12 +708,6 @@ ready(function() {
 
     trees.push(ret);
   }
-
-  const traps = [
-    { x: -0.30, y: -0.20, rot: Math.PI/2, ticks: 0, kind: ID_TRAP_PISTON }
-  ];
-  const enemies = [];
-  const projectiles = [];
 
   let screen_to_world;
   function tick() {
@@ -860,6 +883,9 @@ ready(function() {
       if (trap.kind == ID_TRAP_AUTO)    secs = 0.1;
       const FIRE_INTERVAL = Math.floor(TPS*secs);
 
+      if (trap.kind == ID_TRAP_WALL) {
+      }
+
       if (trap.kind == ID_TRAP_PISTON) {
         if ((trap.ticks % FIRE_INTERVAL) == 0)
           shoot();
@@ -1014,22 +1040,22 @@ ready(function() {
     }
 
     {
-      const x = -0.45;
-      const y =  0.3;
-      const size = 0.06;
+      const x = PORTAL_X;
+      const y = PORTAL_Y;
+      const size = 0.04;
+      const sub_size = size*0.4;
 
       let hp = 0;
-      for (let i = 0; i < 3; i++)
-        for (let j = 0; j < 3; j++) {
-          if (hp > app.get("hp")) continue;
+      for (let i = 0; i <= 2; i++)
+        for (let j = 0; j <= 2; j++) {
+          if (hp >= app.get("hp")) continue;
           hp++;
 
           ctx.fillStyle = "#76609f";
           ctx.fillRect(
-            x + size*lerp(-0.5, 0.5, j/3),
-            y + size*lerp(-0.5, 0.5, i/3),
-            size/3 * 0.8,
-            size/3 * 0.8
+            x + size*lerp(-0.5, 0.5, j/2) - sub_size/2,
+            y + size*lerp(-0.5, 0.5, i/2) - sub_size/2,
+            sub_size, sub_size
           );
         }
     }
@@ -1044,18 +1070,28 @@ ready(function() {
       ctx.restore();
     }
 
-    for (const trap of traps) {
-      const { x, y, rot } = trap;
+    const TRAP_SIZE = 0.04;
+    function draw_trap(trap, hover=false) {
+      const { x, y, rot, kind } = trap;
 
-      const size = 0.04;
-      const hover = !app.placing && point_to_point(mouse.x, mouse.y, x, y) < size*2;
-      if (hover)
-        ctx.fillStyle = "#9680bf";
-      else
-        ctx.fillStyle = "#76609f";
+      if (trap.kind == ID_TRAP_WALL) {
 
-      if (hover && mouse_down)
-        trap.rot = Math.atan2(y - mouse.y, x - mouse.x);
+        for (let i = 0; i < 2; i++) {
+          const size = (!i) ? TRAP_SIZE : 0.7*TRAP_SIZE;
+          ctx.beginPath();
+          ctx.arc(x, y, size/2, 0, 2 * Math.PI);
+          ctx.fillStyle = (!i) ? "#6f5644" : "#8a6951";
+          ctx.fill();
+        }
+        return;
+      } else {
+        if (hover)
+          ctx.fillStyle = "#9680bf";
+        else
+          ctx.fillStyle = "#76609f";
+      }
+
+      const size = TRAP_SIZE;
       ctx.save();
       ctx.translate(x, y);
       ctx.rotate(rot);
@@ -1063,19 +1099,32 @@ ready(function() {
       ctx.restore();
     }
 
+    function draw_wall(from, to) {
+      const WALL_THICK = 0.025;
+      const WALL_COLOR = "#6f5644";
+      ctx.beginPath();
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(  to.x,   to.y);
+      ctx.lineWidth = WALL_THICK;
+      ctx.strokeStyle = WALL_COLOR;
+      ctx.stroke();
+    }
+    for (const { from, to } of walls)
+      draw_wall(from, to);
+
     if (
+      app.placing == ID_TRAP_WALL ||
       app.placing == ID_TRAP_PISTON ||
       app.placing == ID_TRAP_SWINGER ||
       app.placing == ID_TRAP_BLASTER ||
       app.placing == ID_TRAP_AUTO
-      ) {
+    ) (() => {
       const rot = 0;
       const x = mouse.x;
       const y = mouse.y;
 
-      if (mouse_down) {
+      function finish_place() {
         const placing = app.get('placing');
-        traps.push({ x, y, rot, ticks: 0, kind: placing });
 
         const recipe = trap_to_recipe[placing];
         const inv = app.inv;
@@ -1086,22 +1135,96 @@ ready(function() {
         app.set('placing', ID_NONE);
       }
 
-      const size = 0.04;
-      ctx.fillStyle = "#9680bf";
+      if (app.placing == ID_TRAP_WALL) {
+        const posts = traps.filter(t => t.kind == ID_TRAP_WALL);
 
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(rot);
-      ctx.fillRect(size/-2, size/-2, size, size);
-      ctx.restore();
+        /* (not-quite) quadratic perf goes weee */
+        const pairs = [];
+        for (const from of posts) {
+          for (const to of posts) {
+            if (from == to) continue;
+
+            let push = true;
+            for (const { points: [l, r] } of pairs) {
+              if ((l == from || l == to) &&
+                  (r == from || r == to)) {
+                push = false;
+                break;
+              }
+            }
+
+            for (const t of trees)
+              if (point_to_line(from, to, t.x, t.y) < 0.035) {
+                push = false;
+                break;
+              }
+
+            if (push)
+              pairs.push({ points: [from, to], dist: point_to_line(from, to, x, y) });
+          }
+        }
+
+        const closest = pairs.reduce((a, x) => (x.dist < a.dist) ? x : a, { dist: 0.02 });
+
+        ctx.globalAlpha = 0.2;
+        for (const e of pairs)
+          if (e != closest) {
+            const { points: [from, to] } = e;
+            draw_wall(from, to);
+          }
+        ctx.globalAlpha = 1;
+
+        if (closest.points) {
+          const { points: [from, to] } = closest;
+          draw_wall(from, to);
+
+          if (mouse_down) {
+            walls.push({ from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y } });
+            finish_place();
+          }
+          return;
+        } else {
+          for (const t of trees)
+            if (point_to_point(t.x, t.y, x, y) < 0.035) {
+              ctx.beginPath();
+              const size = 0.015;
+              ctx.moveTo(x - size, y - size);
+              ctx.lineTo(x + size, y + size);
+              ctx.moveTo(x + size, y - size);
+              ctx.lineTo(x - size, y + size);
+              ctx.lineWidth = 0.01;
+              ctx.strokeStyle = "#a6656d";
+              ctx.stroke();
+              return;
+            }
+        }
+      }
+
+      if (mouse_down) {
+        const placing = app.get('placing');
+        traps.push({ x, y, rot, ticks: 0, kind: placing });
+
+        finish_place();
+      }
+
+      draw_trap({ x, y, rot, kind: app.get("placing") });
+    })();
+
+    for (const trap of traps) {
+      const { x, y } = trap;
+      const hover = !app.placing && point_to_point(mouse.x, mouse.y, x, y) < TRAP_SIZE*2;
+      if (hover && mouse_down && trap.kind != ID_TRAP_WALL)
+        trap.rot = Math.atan2(y - mouse.y, x - mouse.x);
+
+      draw_trap(trap, hover);
     }
 
     if (app.placing == ID_ITEM_AIRSTRIKE) {
-      const BLAST_RADIUS = 0.365;
+      const BLAST_RADIUS = 0.219;
 
       const { x, y } = mouse;
       ctx.beginPath();
-      ctx.arc(x, y, (BLAST_RADIUS - 0.0004)/2, 0, 2 * Math.PI);
+      ctx.arc(x, y, BLAST_RADIUS, 0, 2 * Math.PI);
       ctx.strokeStyle = "#a6656d";
       ctx.lineWidth = 0.01;
       ctx.setLineDash([0.05, 0.05]);
@@ -1112,7 +1235,7 @@ ready(function() {
         /* quadratic perf goes weee */
         for (const e of enemies) {
           const dist = point_to_point(x, y, e.x, e.y);
-          if (dist < BLAST_RADIUS*0.8) {
+          if (dist < BLAST_RADIUS*1.1) {
             if (Math.random() < 0.3) app.set('money', app.get('money')+1);
             setTimeout(() => enemies.splice(enemies.indexOf(e), 1));
           }
@@ -1120,7 +1243,7 @@ ready(function() {
 
         for (const t of trees) {
           const dist = point_to_point(x, y, t.x, t.y);
-          if (dist < BLAST_RADIUS*0.6) {
+          if (dist < BLAST_RADIUS*0.9) {
             app.set('inv.' + ID_ITEM_WOOD, app.get('inv.' + ID_ITEM_WOOD)+1)
             setTimeout(() => trees.splice(trees.indexOf(t), 1));
           }
