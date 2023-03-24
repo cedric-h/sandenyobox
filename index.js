@@ -45,6 +45,28 @@ function point_to_line2(v, w, p_x, p_y) {
 }
 function point_to_point(x0, y0, x1, y1) { return Math.sqrt(point_to_point2(x0, y0, x1, y1)); }
 function point_to_line (from, to, x, y) { return Math.sqrt(point_to_line2 (from, to, x, y)); }
+function line_hits_line(from0, to0, from1, to1) {
+  const a = from0.x, b = from0.y,
+        c =   to0.x, d =   to0.y,
+        p = from1.x, q = from1.y,
+        r =   to1.x, s =   to1.y;
+  let det, gamma, lambda;
+  det = (c - a) * (s - q) - (r - p) * (d - b);
+  if (det === 0) {
+    return false;
+  } else {
+    lambda = ((s - q) * (r - a) + (p - r) * (s - b)) / det;
+    gamma = ((b - d) * (r - a) + (c - a) * (s - b)) / det;
+    return (0 < lambda && lambda < 1) && (0 < gamma && gamma < 1);
+  }
+}
+function vec2_reflect(vx, vy, nx, ny) {
+  const vdotn = vx*nx + vy*ny;
+  return {
+    x: vx - (2 * vdotn * nx),
+    y: vy - (2 * vdotn * ny),
+  };
+}
 function rad_distance(a, b) {
   const fmodf = (l, r) => l % r;
   const difference = fmodf(b - a, Math.PI*2.0),
@@ -578,7 +600,7 @@ ready(function() {
 
     money: 10,
     timers: new Collection([
-      // { time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" },
+      { time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" },
       { time: 1, ticks: 60*TPS, text: "vendor", icon: "vendor" },
       // { time: "1:35", text: "enemies",  icon: "wave",   },
       // { time: "0:40", text: "vendor",   icon: "vendor", },
@@ -621,60 +643,40 @@ ready(function() {
     mouse_y = ev.pageY;
   };
 
-  const roads = [];
-  const road_ends = [];
-  if (0) {
-    const road = (from_x, from_y, to_x, to_y) => roads.push({
-      from: { x: from_x, y: from_y },
-        to: { x:   to_x, y:   to_y }
-    });
-    const road_end = (x, y) => road_ends.push({ x, y });
-
-    let last_y;
-    for (let i = 0; i <= 3; i++) {
-      const y = lerp(-0.3, 0.3, i/3);
-
-      if (last_y) {
-        const x = (i % 2) ? 0.4 : -0.4;
-        road_end(x,      y);
-        road_end(x, last_y);
-        road(x, last_y,
-             x,      y);
-      }
-
-      if (i % 2)
-        road( 0.4, y,
-             -0.4, y);
-      else
-        road(-0.4, y,
-              0.4, y);
-
-      last_y = y;
-    }
-
-  }
-  const road_dist = roads.reduce((a, { from, to }) => {
-    return a + point_to_point(from.x, from.y, to.x, to.y);
-  }, 0);
-
   const PORTAL_X = 0;
   const PORTAL_Y = 0;
   const trees = [];
   const tick_timeouts = []; /* TODO: make serializable */
-  let $ = () => Math.random() * 0.006;
   const traps = [
-    { x:  0.05 + $(), y: -0.07 + $(), kind: ID_TRAP_WALL },
-    { x:  0.05 + $(), y:  0.07 + $(), kind: ID_TRAP_WALL },
-    { x: -0.07 + $(), y:  0.04 + $(), kind: ID_TRAP_WALL },
-    { x: -0.07 + $(), y: -0.04 + $(), kind: ID_TRAP_WALL },
+    { x:  0.0836, y:  0.0836, kind: ID_TRAP_WALL },
+    { x: -0.0029, y: -0.2118, kind: ID_TRAP_WALL },
+    { x: -0.2046, y: -0.0303, kind: ID_TRAP_WALL },
+    { x: -0.0476, y: -0.0504, kind: ID_TRAP_WALL },
+    { x: -0.0951, y:  0.0360, kind: ID_TRAP_WALL }
     // { x: -0.30, y: -0.20, rot: Math.PI/2, ticks: 0, kind: ID_TRAP_PISTON }
   ];
   const enemies = [];
   const projectiles = [];
-  $ = i => ({ x: traps[i].x, y: traps[i].y });
+  const $ = i => ({ x: traps[i].x, y: traps[i].y });
   const walls = [{ from: $(0), to: $(1) },
-                 { from: $(1), to: $(2) },
-                 { from: $(0), to: $(3) },];
+                 { from: $(4), to: $(2) },
+                 { from: $(4), to: $(0) },
+                 { from: $(4), to: $(3) },];
+  function walls_stuck_out(stick_out) {
+    const ret = JSON.parse(JSON.stringify(walls));
+    for (const i in ret) {
+      const src = walls[i];
+      const dst = ret[i];
+      const len = point_to_point(dst.from.x, dst.from.y,
+                                 dst.  to.x, dst.  to.y);
+      const t = 1 + stick_out/len;
+      dst.from.x = lerp(src.  to.x, src.from.x, t);
+      dst.from.y = lerp(src.  to.y, src.from.y, t);
+      dst.  to.x = lerp(src.from.x, src.  to.x, t);
+      dst.  to.y = lerp(src.from.y, src.  to.y, t);
+    }
+    return ret;
+  }
 
   let _i = 0;
   while (trees.length < 50 && _i < 1e7) {
@@ -698,7 +700,7 @@ ready(function() {
     if (point_to_point(PORTAL_X, PORTAL_Y, ret.x, ret.y) < 0.10)
       continue;
 
-    for (const { from, to } of roads) {
+    for (const { from, to } of walls) {
       if (point_to_line(from, to, ret.x, ret.y) < 0.06) {
         ret = undefined;
         break;
@@ -708,6 +710,173 @@ ready(function() {
 
     trees.push(ret);
   }
+
+  function find_path_to_portal(start_x, start_y, ctx) {
+    const WALL_PAD = 0.07;
+    const LONE_PAD = 0.05;
+
+    /* make walls that stick out a bit past their posts */
+    let posts = [];
+    const _walls = walls_stuck_out(WALL_PAD);
+    for (const { from, to } of _walls) {
+      let { x: from_x, y: from_y } = from;
+      let { x:   to_x, y:   to_y } = to  ;
+      posts.push({ x: from_x, y: from_y, connects: [] });
+      posts.push({ x:   to_x, y:   to_y, connects: [] });
+    }
+
+    /* cubic performance LET'S FUCKING GOOOO */
+    const extra_posts = [];
+    const wall_traps = traps.filter(t => t.kind == ID_TRAP_WALL);
+    for (const from of posts) {
+      for (const to of posts) {
+        for (const p of wall_traps) (() => {
+          if (from == to) return;
+
+          for (const { from: l, to: r } of _walls)
+            if (line_hits_line(l, r, from, to))
+              return;
+
+          if (p != from  && p != to  &&
+              point_to_line(from, to, p.x, p.y) < 0.05) {
+
+            let near_x, near_y;
+            let  far_x,  far_y;
+            if (point_to_point(p.x, p.y, from.x, from.y) <
+                point_to_point(p.x, p.y,   to.x,   to.y))
+              near_x = from.x,  far_x =   to.x,
+              near_y = from.y,  far_y =   to.y;
+            else
+              near_x =   to.x,  far_x = from.x,
+              near_y =   to.y,  far_y = from.y;
+
+            const len = point_to_point(near_x, near_y, far_x, far_y);
+            const tan_x = (near_x - far_x) / len;
+            const tan_y = (near_y - far_y) / len;
+
+            let norm_x, norm_y;
+            if (((near_x - far_x) * (p.y - far_y) - (near_y - far_y) * (p.x - far_x)) < 0)
+              norm_x =  tan_y,
+              norm_y = -tan_x;
+            else
+              norm_x = -tan_y,
+              norm_y =  tan_x;
+
+            extra_posts.push({
+              x: p.x + norm_x*LONE_PAD,
+              y: p.y + norm_y*LONE_PAD,
+              connects: []
+            });
+          }
+        })();
+      }
+    }
+    posts = posts.concat(extra_posts);
+
+    let start, end;
+    posts.push(start = { x: start_x,  y: start_y , connects: [] });
+    posts.push(  end = { x: PORTAL_X, y: PORTAL_Y, connects: [] });
+
+    /* (not-quite) quadratic perf goes weee */
+    const pairs = [];
+    for (const from of posts) {
+      for (const to of posts) {
+        if (from == to) continue;
+
+        let push = true;
+        for (const { from: l, to: r } of pairs) {
+          if ((l == from || l == to) &&
+              (r == from || r == to)) {
+            push = false;
+            break;
+          }
+        }
+        for (const { from: l, to: r } of _walls) {
+          if (line_hits_line(l, r, from, to)) {
+            push = false;
+            break;
+          }
+        }
+        for (const p of wall_traps) {
+          if (p != from  && p != to  &&
+              p != start && p != end &&
+              point_to_line(from, to, p.x, p.y) < 0.02) {
+            push = false;
+            break;
+          }
+        }
+
+        if (push) {
+          from.connects.push(  to);
+            to.connects.push(from);
+          pairs.push({ from, to });
+        }
+      }
+    }
+
+    const frontier = [];
+    const came_from = new Map();
+    const cost_from = new Map();
+    frontier.push(start);
+    came_from.set(start, "start");
+    cost_from.set(start, 0);
+    while (frontier.length) {
+      const current = frontier.shift();
+      if (current == end) break;
+
+      for (const next of current.connects) {
+        const dist = point_to_point(current.x, current.y, next.x, next.y);
+        const next_cost = cost_from.get(current) + dist;
+        if (!cost_from.has(next) || next_cost < cost_from.get(next)) {
+          frontier.push(next);
+          frontier.sort((a, b) => cost_from.get(a) - cost_from.get(b));
+          cost_from.set(next, next_cost);
+          came_from.set(next, current);
+        }
+      }
+    }
+
+    const ret = [];
+    for (let n = end; came_from.get(n) != "start"; n = came_from.get(n)) {
+      const from = n;
+      let     to = came_from.get(n);
+      if (to == "start") to = start;
+      if (to == undefined) break;
+
+      ret.push({ from, to });
+    }
+
+    if (ctx) {
+      ctx.globalAlpha = 0.3;
+      for (const { from, to } of pairs) {
+        const WALL_THICK = 0.0195;
+        const WALL_COLOR = "#76609f";
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(  to.x,   to.y);
+        ctx.lineWidth = WALL_THICK;
+        ctx.strokeStyle = WALL_COLOR;
+        ctx.stroke();
+      }
+
+      ctx.globalAlpha = 0.8;
+      for (const { from, to } of ret) {
+        const WALL_THICK = 0.0095;
+        const WALL_COLOR = "#a6656d";
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(  to.x,   to.y);
+        ctx.lineWidth = WALL_THICK;
+        ctx.strokeStyle = WALL_COLOR;
+        ctx.stroke();
+      }
+
+      ctx.globalAlpha = 1;
+    }
+
+    return ret.reverse().map(x => x.from);
+  }
+
 
   let screen_to_world;
   function tick() {
@@ -761,7 +930,7 @@ ready(function() {
         /* TODO: enum */
         if (t.get("text") == "enemies") {
           if (window.wave_size == undefined)
-            window.wave_size = 3;
+            window.wave_size = 4;
           else
             window.wave_size++;
 
@@ -770,21 +939,17 @@ ready(function() {
           (function enemy() {
             enemy_count++;
             if (enemy_count <= window.wave_size)
-              tick_timeouts.push({ fn: enemy, ticks: Math.floor(0.3*TPS) });
+              tick_timeouts.push({ fn: enemy, ticks: Math.floor(0.8*TPS) });
 
-            enemies.push({
-              x: roads[0].from.x,
-              y: roads[0].from.y,
-              ticks: 0,
-            });
-
+            const { x, y } = trees[Math.floor(Math.random()*trees.length)];
+            const path = find_path_to_portal(x, y);
+            enemies.push({ x, y, ticks: 0, path });
           })();
 
           pending_timers.push({ time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" });
         }
 
         if (t.get("text") == "vendor") {
-          console.log("vendoring");
           app.set("vendoring", true);
           app.set("placing", ID_NONE);
           pending_timers.push({ time: 1, ticks: 60*TPS, text: "vendor", icon: "vendor" });
@@ -832,8 +997,22 @@ ready(function() {
 
     for (const e of enemies) {
       e.ticks++;
-      const JOURNEY_TICKS = 25 * TPS;
-      if (e.ticks > JOURNEY_TICKS) {
+      const UNITS_PER_TICK = 0.001;
+
+      if (e.path.length == 0) continue;
+
+      let next, dist;
+      do {
+        next = e.path[0];
+        dist = point_to_point(e.x, e.y, next.x, next.y);
+        if (dist < 0.001) {
+          e.path.shift();
+        }
+        else break;
+      } while (e.path.length);
+
+      /* HONEY I'M HOOOOOME */
+      if (e.path.length == 0) {
         app.set("hp", app.get("hp") - 1);
         if (app.get("hp") == 0)
           app.set("game_over", true);
@@ -841,24 +1020,13 @@ ready(function() {
         continue;
       }
 
-      {
-        let t = e.ticks / JOURNEY_TICKS;
-        t *= road_dist;
-        let stretch;
-        for (const i in roads) {
-          const { from, to } = roads[i];
-          const dist = point_to_point(from.x, from.y, to.x, to.y);
-          if (t < dist) {
-            t = t / dist;
-            stretch = roads[i];
-            break;
-          }
-          t -= dist;
-        }
+      let delta_x = (next.x - e.x) / dist;
+      let delta_y = (next.y - e.y) / dist;
+      let move_x = delta_x * UNITS_PER_TICK;
+      let move_y = delta_y * UNITS_PER_TICK;
 
-        e.x = lerp(stretch.from.x, stretch.to.x, t);
-        e.y = lerp(stretch.from.y, stretch.to.y, t);
-      }
+      e.x += move_x;
+      e.y += move_y;
     }
 
     for (const trap of traps) {
@@ -1014,27 +1182,10 @@ ready(function() {
       }
     }
 
-    for (let i = 0; i < 2; i++) {
-      const ROAD_THICK = i ? 0.0525 : 0.065;
-      const ROAD_COLOR = i ? "#6575a6" : "#57658f";
-      for (const { from, to } of roads) {
-        ctx.beginPath();
-        ctx.moveTo(from.x, from.y);
-        ctx.lineTo(  to.x,   to.y);
-        ctx.lineWidth = ROAD_THICK;
-        ctx.strokeStyle = ROAD_COLOR;
-        ctx.stroke();
-      }
-      for (const {x, y} of road_ends) {
-        ctx.beginPath();
-        ctx.arc(x, y, (ROAD_THICK - 0.0004)/2, 0, 2 * Math.PI);
-        ctx.fillStyle = ROAD_COLOR;
-        ctx.fill();
-      }
-    }
+    // const ROAD_COLOR = i ? "#6575a6" : "#57658f";
 
     for (const { x, y } of enemies) {
-      const size = 0.04;
+      const size = 0.03;
       ctx.fillStyle = "#9f6060";
       ctx.fillRect(x + size/-2, y + size/-2, size, size);
     }
@@ -1099,17 +1250,18 @@ ready(function() {
       ctx.restore();
     }
 
-    function draw_wall(from, to) {
-      const WALL_THICK = 0.025;
+    function draw_wall({ x: from_x, y: from_y }, { x: to_x, y: to_y }) {
+      const WALL_THICK = 0.023;
       const WALL_COLOR = "#6f5644";
       ctx.beginPath();
-      ctx.moveTo(from.x, from.y);
-      ctx.lineTo(  to.x,   to.y);
+      ctx.moveTo(from_x, from_y);
+      ctx.lineTo(  to_x,   to_y);
       ctx.lineWidth = WALL_THICK;
       ctx.strokeStyle = WALL_COLOR;
       ctx.stroke();
     }
-    for (const { from, to } of walls)
+    const _walls = walls_stuck_out(0.03);
+    for (const { from, to } of _walls)
       draw_wall(from, to);
 
     if (
@@ -1152,7 +1304,12 @@ ready(function() {
                 break;
               }
             }
-
+            for (const { from: l, to: r } of _walls) {
+              if (line_hits_line(l, r, from, to)) {
+                push = false;
+                break;
+              }
+            }
             for (const t of trees)
               if (point_to_line(from, to, t.x, t.y) < 0.035) {
                 push = false;
@@ -1253,6 +1410,8 @@ ready(function() {
         app.set("placing", ID_NONE);
       }
     }
+
+    if (0) find_path_to_portal(mouse.x, mouse.y, ctx);
 
     ctx.restore();
   });
