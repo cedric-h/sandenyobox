@@ -157,9 +157,17 @@ vim: sw=2 ts=2 expandtab smartindent ft=css
   align-items: center;
   justify-content: space-between;
 }
+.vendor-top-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.vendor-panic      { filter: sepia(0.7); }
+.vendor-panic-hard { filter: sepia(1); }
 
 .time-queue-container {
   font-family: monospace;
+  pointer-events: none;
   position: absolute;
   bottom: 0.1em;
   left: 0.4em;

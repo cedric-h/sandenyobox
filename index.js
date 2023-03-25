@@ -190,12 +190,13 @@ const InvItemBox = kind({
       this.app.set('placing', id);
     if (id == ID_ITEM_FLARE) {
       const timers = this.get("app.timers");
+
       /* probably a silly way to filter out axes but meh */
       let nearest;
       for (let i = 0; i < timers.length; i++) {
         const j = timers.length - 1 - i;
-        if (timers.at(j).get("text") == "vendor" ||
-            timers.at(j).get("text") == "enemies") {
+        if (timers[j].text == "vendor" ||
+            timers[j].text == "enemies") {
           nearest = j;
           break;
         }
@@ -203,9 +204,9 @@ const InvItemBox = kind({
 
       const soon = Math.floor(TPS*2.5);
       for (let i = 0; i < timers.length; i++) {
-        if (timers.at(i).get("text") == "vendor" ||
-            timers.at(i).get("text") == "enemies") {
-          timers.at(i).set("ticks", soon);
+        if (timers[i].text == "vendor" ||
+            timers[i].text == "enemies") {
+          timers[i].ticks = soon;
         }
       }
 
@@ -393,93 +394,140 @@ const App = kind({
     },
     {
       classes: "sidebar sidesidebar",
-      bindings: [{ from: "app.vendoring", to: "showing" }],
+      bindings: [
+        { from: "app.vendoring", to: "style", transform: p => p ? "" : "height: fit-content;" },
+        /* referencing these directly in the computed property doesn't work, so we copy them in and never use them */
+        { from: "app.game_over",         to: "game_over" },
+        { from: "app.vendor_stay_ticks", to: "vendor_stay_ticks" },
+      ],
+      computed: [{ method: "set_showing", path: [ "game_over", "vendor_stay_ticks" ] }],
+      set_showing() {
+        if (this.app.get("vendor_stay_ticks") < Math.floor(TPS*3))
+          this.set("classes", "sidebar sidesidebar vendor-panic-hard");
+        else if (this.app.get("vendor_stay_ticks") < Math.floor(TPS*5))
+          this.set("classes", "sidebar sidesidebar vendor-panic");
+        else
+          this.set("classes", "sidebar sidesidebar");
+        this.set("showing", !this.app.get("game_over") && this.app.get("vendor_stay_ticks") > 0);
+      },
       components: [
-        { tag: "span", content: "vendor", classes: "section-header" },
         {
-          kind: DataRepeater,
-          collection: [
-            { cost:  3, count: 2, id: ID_ITEM_SCREW },
-            { cost: 10, count: 1, id: ID_ITEM_AXE },
-            { cost: 20, count: 1, id: ID_ITEM_AIRSTRIKE },
-            { cost: 10, count: 1, id: ID_ITEM_FLARE },
-            { cost: 40, count: 1, id: ID_ITEM_PC }
-          ],
+          classes: "vendor-top-bar",
           components: [
-            {
-              classes: 'vendor-good-div',
-              components: [
-                { kind: ItemBox, enable_tooltips: false, bindings: [
-                  { from: "owner.model.count", to: "count" },
-                  { from: "owner.model.id"   , to: "iid" }
-                ]},
-                {
-                  bindings: [{ from: "owner.model.id", to: "content", transform: id => id_to_desc[id] }],
-                  classes: "section-info",
-                  style: "font-size: 0.75em; width: 9em;"
-                },
-                {
-                  kind: Button,
-                  bindings: [
-                    { from: "app.money", to: "can_afford",
-                      transform(money) { return this.get("owner.model.cost") > money; } }
-                  ],
-                  can_affordChanged(was, is) {
-                    /* TODO: why doesn't writing directly to "disabled" work? */
-                    this.setAttribute("disabled", is);
-                  },
-                  components: [
-                    { tag: 'span', classes: "section-header", style: "margin-right: 0.3em",
-                      bindings: [{ from: "owner.model.cost", to: "content", }] },
-                    {
-                      tag: "img",
-                      classes: "recipe-ingredient-img",
-                      attributes: { src: "assets/money.svg" },
-                    },
-                 ],
-                 handlers: { ontap: 'on_tap' },
-                 on_tap() {
-                   const cost = this.get("owner.model.cost");
-                   const count = this.get("owner.model.count");
-                   const id = this.get("owner.model.id");
-                   this.set('app.money', this.get('app.money') - cost);
-                   const inv = this.get('app.inv');
-                   inv.set(id, inv.get(id) + count);
-                   // this.owner.render();
-                 },
-                 classes: 'recipe-buy-button vendor-buy-button',
-                 style: "font-size: 0.8em;",
-                 attributes: { tabindex: "-1" },
-                }
-              ]
-            }
-          ]
-        },
-        { content: "<br>", allowHtml: true },
-        {
-          style: "display: flex; align-items: center;",
-          components: [
+            { tag: "span", content: "vendor", classes: "section-header" },
             {
               classes: "section-info",
-              style: "margin-right: 1.5em;",
-              components: [
-                { classes: "section-subheader", content: "the survivalist" },
-                { content: "he's eaten some things he probably shouldn't have" },
+              bindings: [
+                { from: "app.vendoring",          to: "showing", transform: p => !p },
+                { from: "app.vendor_stay_ticks", to: "content", transform: t => "0:" + (''+Math.floor(t/TPS)).padStart(2, '0') }
               ]
             },
-            // { content: "<br>", allowHtml: true },
             {
               kind: Button,
-              content: "DISMISS",
+              content: "ACCEPT",
+              bindings: [
+                { from: "app.vendoring",          to: "showing", transform: p => !p },
+              ],
               handlers: { ontap: 'on_tap' },
               on_tap() {
-                this.app.set("vendoring", 0);
+                this.app.set("placing", ID_NONE);
+                this.app.set("vendoring", 1);
               },
               style: "height: 2.0em",
               classes: 'recipe-buy-button',
             }
           ]
         },
+        {
+          bindings: [{ from: "app.vendoring", to: "showing" }],
+          components: [
+            {
+              kind: DataRepeater,
+              collection: [
+                { cost:  3, count: 2, id: ID_ITEM_SCREW },
+                { cost: 10, count: 1, id: ID_ITEM_AXE },
+                { cost: 20, count: 1, id: ID_ITEM_AIRSTRIKE },
+                { cost: 10, count: 1, id: ID_ITEM_FLARE },
+                { cost: 40, count: 1, id: ID_ITEM_PC }
+              ],
+              components: [
+                {
+                  classes: 'vendor-good-div',
+                  components: [
+                    { kind: ItemBox, enable_tooltips: false, bindings: [
+                      { from: "owner.model.count", to: "count" },
+                      { from: "owner.model.id"   , to: "iid" }
+                    ]},
+                    {
+                      bindings: [{ from: "owner.model.id", to: "content", transform: id => id_to_desc[id] }],
+                      classes: "section-info",
+                      style: "font-size: 0.75em; width: 9em;"
+                    },
+                    {
+                      kind: Button,
+                      bindings: [
+                        { from: "app.money", to: "can_afford",
+                          transform(money) { return this.get("owner.model.cost") > money; } }
+                      ],
+                      can_affordChanged(was, is) {
+                        /* TODO: why doesn't writing directly to "disabled" work? */
+                        this.setAttribute("disabled", is);
+                      },
+                      components: [
+                        { tag: 'span', classes: "section-header", style: "margin-right: 0.3em",
+                          bindings: [{ from: "owner.model.cost", to: "content", }] },
+                        {
+                          tag: "img",
+                          classes: "recipe-ingredient-img",
+                          attributes: { src: "assets/money.svg" },
+                        },
+                     ],
+                     handlers: { ontap: 'on_tap' },
+                     on_tap() {
+                       const cost = this.get("owner.model.cost");
+                       const count = this.get("owner.model.count");
+                       const id = this.get("owner.model.id");
+                       this.set('app.money', this.get('app.money') - cost);
+                       const inv = this.get('app.inv');
+                       inv.set(id, inv.get(id) + count);
+                       // this.owner.render();
+                     },
+                     classes: 'recipe-buy-button vendor-buy-button',
+                     style: "font-size: 0.8em;",
+                     attributes: { tabindex: "-1" },
+                    }
+                  ]
+                }
+              ]
+            },
+            { content: "<br>", allowHtml: true },
+            {
+              style: "display: flex; align-items: center;",
+              components: [
+                {
+                  classes: "section-info",
+                  style: "margin-right: 1.5em;",
+                  components: [
+                    { classes: "section-subheader", content: "the survivalist" },
+                    { content: "he's eaten some things he probably shouldn't have" },
+                  ]
+                },
+                // { content: "<br>", allowHtml: true },
+                {
+                  kind: Button,
+                  content: "DISMISS",
+                  handlers: { ontap: 'on_tap' },
+                  on_tap() {
+                    this.app.set("vendoring", 0);
+                    this.app.set("vendor_stay_ticks", 0);
+                  },
+                  style: "height: 2.0em",
+                  classes: 'recipe-buy-button',
+                }
+              ]
+            },
+          ]
+        }
       ]
     },
     {
@@ -556,63 +604,35 @@ const App = kind({
     },
     {
       classes: "time-queue-container",
-      components: [
-        {
-          kind: DataRepeater,
-          name: "time_queue",
-          bindings: [{ from: "app.timers", to: "collection" }],
-          components: [{
-            style: "margin-top: 0.6em",
-            // bindings: [{ from: "model.time", to: "showing", transform: t => t > 0 }],
-            components: [
-              {
-                tag: "span",
-                bindings: [{ from: "owner.model.time", to: "content", transform: x => x + ' ' }],
-                classes: "time-queue-time"
-              },
-              {
-                tag: "img",
-                classes: "time-queue-icon",
-                bindings: [
-                  { from: "owner.model.icon", to: "attributes.src", transform: icon => `assets/${icon}.svg` },
-                ],
-              },
-              {
-                tag: "span",
-                bindings: [{ from: "owner.model.text", to: "content", transform: x => ' ' + x }],
-                classes: "time-queue-desc"
-              },
-            ]
-          }],
-        }
-      ]
+      name: "time_queue",
+      allowHtml: true,
+      contents: '',
     }
   ]
 });
 
 ready(function() {
-  let pending_timers = [];
   const app = new EnyoApplication({
     placing: ID_NONE,
     vendoring: false,
+    vendor_stay_ticks: 0,
     game_over: false,
     hp: 9,
-
-    money: 10,
-    timers: new Collection([
+    timers: [
       { time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" },
-      { time: 1, ticks: 60*TPS, text: "vendor", icon: "vendor" },
+      { time: 1, ticks:  5*TPS, text: "vendor", icon: "vendor" },
       // { time: "1:35", text: "enemies",  icon: "wave",   },
       // { time: "0:40", text: "vendor",   icon: "vendor", },
       // { time: "0:01", text: "axe done", icon: "axe",    }
-    ]),
+    ],
+    money: 10,
     inv: new Model({
-      [ID_ITEM_WOOD     ]: 20,
-      [ID_ITEM_SCREW    ]: 32,
+      [ID_ITEM_WOOD     ]: 90,
+      [ID_ITEM_SCREW    ]: 92,
       [ID_ITEM_AXE      ]:  2,
       [ID_ITEM_FLARE    ]:  1,
       [ID_ITEM_AIRSTRIKE]:  1,
-      [ID_ITEM_PC       ]:  0,
+      [ID_ITEM_PC       ]:  1,
       [ID_ITEM_BOOK     ]:  0,
       [ID_NONE          ]:  0,
     }),
@@ -885,27 +905,6 @@ ready(function() {
     // }
     const cleanups = [];
 
-    /* sorting the collection directly caused error in DataRepeater
-       also calling remove without the sort causes error in DataRepeater */
-
-    const tq = app.get("$.sandEnyoBox.$.time_queue");
-    for (let i = 0; i < app.timers.length; i++)
-      tq.remove(0);
-
-    const models = app.timers.empty({ destroy: false });
-    for (const pending_timer of pending_timers) {
-      models.push(new Model(pending_timer));
-    }
-    pending_timers = [];
-    models.sort((a, b) => {
-      if (b.attributes.ticks == a.attributes.ticks) {
-        b.cheese = b.cheese ? b.cheese : Math.random();
-        a.cheese = a.cheese ? a.cheese : Math.random();
-        return b.cheese - a.cheese;
-      }
-      return b.attributes.ticks - a.attributes.ticks
-    });
-
     for (const tt of tick_timeouts) {
       tt.ticks--;
       if (tt.ticks == 0) {
@@ -914,21 +913,34 @@ ready(function() {
       }
     }
 
-    for (const t of models) {
-      t.set('ticks', t.get('ticks')-1);
-      if (t.get('ticks') < 0) continue;
+    app.timers.sort((a, b) => b.ticks - a.ticks);
 
-      let secs = Math.floor(t.get('ticks') / TPS);
-      secs = (''+secs).padStart(2, '0');
-      // let sub = 1 - ((t.get('ticks') / TPS) - secs)
-      //sub = (''+sub.toFixed(2)).padStart(2, '0').substr(2);
-      // t.set('time', secs+':'+sub);
-      t.set('time', '0:' + secs);
+    {
+      const vlt = app.get("vendor_stay_ticks");
+      if (vlt) app.set("vendor_stay_ticks", vlt - 1);
+    }
 
-      if (t.get('ticks') <= 0) {
+    let tq_html = '';
+    for (const t of app.timers) {
+      t.ticks--;
+
+      tq_html += '<div style="margin-top: 0.6em">';
+        tq_html += '<span class="time-queue-time">';
+          let secs = Math.floor(t.ticks / TPS);
+          secs = (''+secs).padStart(2, '0');
+          tq_html += '0:' + secs + ' ';
+        tq_html += '</span>';
+        tq_html += `<img class="time-queue-icon" src="assets/${t.icon}.svg">`;
+        tq_html += '<span class="time-queue-desc">';
+          tq_html += ' ' + t.text;
+        tq_html += '</span>';
+      tq_html += '</div>';
+
+      if (t.ticks <= 0) {
+        cleanups.push(() => app.timers.splice(app.timers.indexOf(t), 1));
 
         /* TODO: enum */
-        if (t.get("text") == "enemies") {
+        if (t.text == "enemies") {
           if (window.wave_size == undefined)
             window.wave_size = 4;
           else
@@ -946,44 +958,46 @@ ready(function() {
             enemies.push({ x, y, ticks: 0, path });
           })();
 
-          pending_timers.push({ time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" });
+          cleanups.push(() => {
+            app.timers.push({ time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" });
+          });
         }
 
-        if (t.get("text") == "vendor") {
-          app.set("vendoring", true);
-          app.set("placing", ID_NONE);
-          pending_timers.push({ time: 1, ticks: 60*TPS, text: "vendor", icon: "vendor" });
+        if (t.text == "vendor") {
+          app.set("vendor_stay_ticks", 10*TPS);
+          cleanups.push(() => {
+            app.timers.push({ time: 1, ticks: 60*TPS, text: "vendor", icon: "vendor" });
+          });
         }
 
-        if (t.get("text") == "axe done") {
+        if (t.text == "axe done") {
           const inv = app.inv;
           inv.set(ID_ITEM_AXE, inv.get(ID_ITEM_AXE) + 1);
           inv.set(ID_ITEM_WOOD, inv.get(ID_ITEM_WOOD) + Math.floor(lerp(3, 5, Math.random())));
 
         }
       }
-      else {
-        app.timers.add(t);
-        tq.add(t);
-      }
     }
+    const tq = app.get("$.sandEnyoBox.$.time_queue");
+    tq.set("content", tq_html);
 
     const kill_p = p => cleanups.push(() => projectiles.splice(projectiles.indexOf(p), 1));
     const kill_e = e => cleanups.push(() => enemies    .splice(enemies    .indexOf(e), 1));
+    const _walls = walls_stuck_out(0.04);
     for (const p of projectiles) {
 
       p.ticks++;
       let JOURNEY_TICKS = 0.5 * TPS;
       if (p.kind == ID_TRAP_SWINGER) JOURNEY_TICKS = 1.0 * TPS;
       if (p.kind == ID_TRAP_BLASTER) JOURNEY_TICKS = 1.4 * TPS;
-      if (p.kind == ID_TRAP_AUTO   ) JOURNEY_TICKS = 1.4 * TPS;
+      if (p.kind == ID_TRAP_AUTO   ) JOURNEY_TICKS = 1.6 * TPS;
 
       if (p.ticks > JOURNEY_TICKS) { kill_p(p); continue; }
 
       /* quadratic perf goes weee */
       for (const e of enemies) {
         const dist = point_to_point(p.x, p.y, e.x, e.y);
-        if (dist < 0.04) {
+        if (dist < 0.02) {
           kill_p(p);
           kill_e(e);
           app.set('money', app.get('money')+1);
@@ -991,8 +1005,13 @@ ready(function() {
         }
       }
       
-      p.x += p.vx * 0.003;
-      p.y += p.vy * 0.003;
+      const next_p = { x: p.x + p.vx * 0.003,
+                       y: p.y + p.vy * 0.003 };
+      for (const { from, to } of _walls)
+        if (line_hits_line(from, to, next_p, p))
+          kill_p(p);
+      p.x = next_p.x;
+      p.y = next_p.y;
     }
 
     for (const e of enemies) {
@@ -1011,10 +1030,19 @@ ready(function() {
         else break;
       } while (e.path.length);
 
+      for (const t of traps) if (t.kind != ID_TRAP_WALL) {
+        const dist = point_to_point(t.x, t.y, e.x, e.y);
+        if (dist < 0.03) {
+          cleanups.push(() => traps.splice(traps.indexOf(t), 1));
+          break;
+        }
+      }
+
       /* HONEY I'M HOOOOOME */
       if (e.path.length == 0) {
         app.set("hp", app.get("hp") - 1);
         if (app.get("hp") == 0)
+          app.set("placing", ID_NONE),
           app.set("game_over", true);
         kill_e(e);
         continue;
@@ -1033,13 +1061,14 @@ ready(function() {
       trap.ticks++;
 
       const shoot = (angle=0) => {
+        const vx = -Math.cos(trap.rot+angle);
+        const vy = -Math.sin(trap.rot+angle);
         projectiles.push({
           kind: trap.kind,
-          x: trap.x,
-          y: trap.y,
+          vx, vy,
+          x: trap.x + vx*0.025,
+          y: trap.y + vy*0.025,
           rot: trap.rot,
-          vx: -Math.cos(trap.rot+angle),
-          vy: -Math.sin(trap.rot+angle),
           ticks: 0,
         });
       }
@@ -1075,10 +1104,11 @@ ready(function() {
 
         const nearest = enemies.reduce((best, e) => {
           const dist = point_to_point(e.x, e.y, trap.x, trap.y);
+          if (best == undefined) return { dist, e };
           return (dist < best.dist) ? { dist, e } : best;
-        });
+        }, undefined);
 
-        const ideal_rot = Math.atan2(trap.y - nearest.y, trap.x - nearest.x);
+        const ideal_rot = Math.atan2(trap.y - nearest.e.y, trap.x - nearest.e.x);
         const distance = rad_distance(trap.rot, ideal_rot);
         const force = Math.min(0.04, Math.abs(distance));
         trap.rot += force*Math.sign(distance);
@@ -1152,7 +1182,7 @@ ready(function() {
 
           if (mouse_down && hover) {
             const ticks = 15*TPS;
-            pending_timers.push({
+            app.timers.push({
               time: 1, ticks,
               text: "axe done", icon: "axe",
             });
@@ -1202,7 +1232,7 @@ ready(function() {
           if (hp >= app.get("hp")) continue;
           hp++;
 
-          ctx.fillStyle = "#76609f";
+          ctx.fillStyle = "#4c4777";
           ctx.fillRect(
             x + size*lerp(-0.5, 0.5, j/2) - sub_size/2,
             y + size*lerp(-0.5, 0.5, i/2) - sub_size/2,
@@ -1213,7 +1243,7 @@ ready(function() {
 
     for (const { x, y, rot } of projectiles) {
       const size = 0.015;
-      ctx.fillStyle = "#9f6060";
+      ctx.fillStyle = "#7873aa";
       ctx.save();
       ctx.translate(x, y);
       ctx.rotate(rot);
@@ -1292,9 +1322,12 @@ ready(function() {
 
         /* (not-quite) quadratic perf goes weee */
         const pairs = [];
+        const key = pt => Math.floor(pt.x * 1000) + ',' + Math.floor(pt.y * 1000);
         for (const from of posts) {
+          const from_key = key(from);
           for (const to of posts) {
             if (from == to) continue;
+            const to_key = key(to);
 
             let push = true;
             for (const { points: [l, r] } of pairs) {
@@ -1304,10 +1337,20 @@ ready(function() {
                 break;
               }
             }
-            for (const { from: l, to: r } of _walls) {
+            for (const { from: l, to: r } of walls) {
               if (line_hits_line(l, r, from, to)) {
                 push = false;
                 break;
+              }
+            }
+            for (const { from, to } of walls) {
+              const _from_key = key(from);
+              const _to_key   = key(to  );
+              if ((_from_key == from_key &&   _to_key == to_key) ||
+                  (  _to_key == from_key && _from_key == to_key))
+              {
+                push = false;
+                break
               }
             }
             for (const t of trees)
@@ -1340,21 +1383,31 @@ ready(function() {
             finish_place();
           }
           return;
-        } else {
-          for (const t of trees)
-            if (point_to_point(t.x, t.y, x, y) < 0.035) {
-              ctx.beginPath();
-              const size = 0.015;
-              ctx.moveTo(x - size, y - size);
-              ctx.lineTo(x + size, y + size);
-              ctx.moveTo(x + size, y - size);
-              ctx.lineTo(x - size, y + size);
-              ctx.lineWidth = 0.01;
-              ctx.strokeStyle = "#a6656d";
-              ctx.stroke();
-              return;
-            }
         }
+      }
+
+      {
+        const draw_x = () => {
+          ctx.beginPath();
+          const size = 0.015;
+          ctx.moveTo(x - size, y - size);
+          ctx.lineTo(x + size, y + size);
+          ctx.moveTo(x + size, y - size);
+          ctx.lineTo(x - size, y + size);
+          ctx.lineWidth = 0.01;
+          ctx.strokeStyle = "#a6656d";
+          ctx.stroke();
+        }
+        for (const t of trees.concat(traps).concat(enemies))
+          if (point_to_point(t.x, t.y, x, y) < 0.035) {
+            draw_x();
+            return;
+          }
+        for (const { from, to } of walls)
+          if (point_to_line(from, to, x, y) < 0.04) {
+            draw_x();
+            return;
+          }
       }
 
       if (mouse_down) {
