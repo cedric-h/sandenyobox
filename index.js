@@ -147,10 +147,10 @@ const id_to_desc = {
 };
 const trap_to_recipe = {
   [ID_TRAP_WALL     ]: { [ID_ITEM_WOOD]:  5, [ID_ITEM_SCREW]:  1, [ID_ITEM_PC]: 0 },
-  [ID_TRAP_PISTON   ]: { [ID_ITEM_WOOD]: 10, [ID_ITEM_SCREW]:  5, [ID_ITEM_PC]: 0 },
-  [ID_TRAP_SWINGER  ]: { [ID_ITEM_WOOD]: 15, [ID_ITEM_SCREW]: 10, [ID_ITEM_PC]: 0 },
-  [ID_TRAP_BLASTER  ]: { [ID_ITEM_WOOD]: 25, [ID_ITEM_SCREW]: 30, [ID_ITEM_PC]: 0 },
-  [ID_TRAP_AUTO     ]: { [ID_ITEM_WOOD]: 50, [ID_ITEM_SCREW]: 90, [ID_ITEM_PC]: 1 },
+  [ID_TRAP_PISTON   ]: { [ID_ITEM_WOOD]: 15, [ID_ITEM_SCREW]:  3, [ID_ITEM_PC]: 0 },
+  [ID_TRAP_SWINGER  ]: { [ID_ITEM_WOOD]: 20, [ID_ITEM_SCREW]:  8, [ID_ITEM_PC]: 0 },
+  [ID_TRAP_BLASTER  ]: { [ID_ITEM_WOOD]: 35, [ID_ITEM_SCREW]: 15, [ID_ITEM_PC]: 0 },
+  [ID_TRAP_AUTO     ]: { [ID_ITEM_WOOD]: 50, [ID_ITEM_SCREW]: 40, [ID_ITEM_PC]: 1 },
 };
 
 const ItemBox = kind({
@@ -430,8 +430,78 @@ const App = kind({
               ],
               handlers: { ontap: 'on_tap' },
               on_tap() {
-                this.app.set("placing", ID_NONE);
-                this.app.set("vendoring", 1);
+                const app = this.app;
+                app.set("placing", ID_NONE);
+                app.set("vendoring", 1);
+
+                function screwball() {
+                  const ret = [
+                    { cost:  3, count: 2, id: ID_ITEM_SCREW },
+                    { cost: 10, count: 1, id: ID_ITEM_AXE   },
+                  ]
+                  if (Math.random() < 0.1)
+                    ret.push({ cost: 10, count: 1, id: ID_ITEM_FLARE     });
+                  if (Math.random() < 0.05)
+                    ret.push({ cost: 20, count: 1, id: ID_ITEM_AIRSTRIKE });
+                  if (app.inv[ID_ITEM_BOOK] > 0)
+                    ret.push({ cost: 20, count: 30, id: ID_ITEM_SCREW });
+
+                  return {
+                    inventory: ret,
+                    name: "screwball",
+                    desc: "rumored to be an axe murderer"
+                  }
+                }
+
+                function survivalist() {
+                  const ret = [
+                    { cost:  8, count: 1, id: ID_ITEM_AXE   },
+                    (Math.random() < 0.5)
+                      ? { cost: 20, count: 1, id: ID_ITEM_AIRSTRIKE }
+                      : { cost: 10, count: 1, id: ID_ITEM_FLARE     }
+                  ]
+
+                  const has_book = app.inv[ID_ITEM_BOOK] > 0;
+                  if (!has_book && Math.random() < 0.05)
+                    ret.push({ cost: 99, count: 1, id: ID_ITEM_BOOK });
+
+                  if (Math.random() < 0.1 || has_book)
+                    ret.push({ cost: 40, count: 1, id: ID_ITEM_PC });
+
+                  if (has_book)
+                    ret.push({ count: 3, count: 2, id: ID_ITEM_AXE });
+
+                  return {
+                    inventory: ret,
+                    name: "the survivalist",
+                    desc: "he's eaten some things he probably shouldn't have"
+                  }
+                }
+
+                function tinkerer() {
+                  const ret = [
+                    { cost: 13, count: 10, id: ID_ITEM_SCREW },
+                    { cost: 20, count: 1, id: ID_ITEM_AIRSTRIKE },
+                    { cost: 40, count: 1, id: ID_ITEM_PC }
+                  ]
+                  const has_book = app.inv[ID_ITEM_BOOK] > 0;
+                  if (!has_book && Math.random() < 0.07)
+                    ret.push({ cost: 50, count: 1, id: ID_ITEM_BOOK });
+                  if (has_book) {
+                    ret.push({ cost: 40, count: 50, id: ID_ITEM_SCREW     });
+                    ret.push({ cost: 40, count:  3, id: ID_ITEM_AIRSTRIKE });
+                  }
+
+                  return {
+                    inventory: ret,
+                    name: "the tinkerer",
+                    desc: "he's sorry about all the killer robots"
+                  }
+                }
+
+                const choices = [ screwball, survivalist, tinkerer ];
+                const choice = choices[Math.floor(Math.random() * choices.length)]();
+                this.app.set("vendor_data", choice);
               },
               style: "height: 2.0em",
               classes: 'recipe-buy-button',
@@ -443,13 +513,7 @@ const App = kind({
           components: [
             {
               kind: DataRepeater,
-              collection: [
-                { cost:  3, count: 2, id: ID_ITEM_SCREW },
-                { cost: 10, count: 1, id: ID_ITEM_AXE },
-                { cost: 20, count: 1, id: ID_ITEM_AIRSTRIKE },
-                { cost: 10, count: 1, id: ID_ITEM_FLARE },
-                { cost: 40, count: 1, id: ID_ITEM_PC }
-              ],
+              bindings: [{ from: "app.vendor_data", to: "collection", transform: vd => vd.inventory }],
               components: [
                 {
                   classes: 'vendor-good-div',
@@ -508,8 +572,13 @@ const App = kind({
                   classes: "section-info",
                   style: "margin-right: 1.5em;",
                   components: [
-                    { classes: "section-subheader", content: "the survivalist" },
-                    { content: "he's eaten some things he probably shouldn't have" },
+                    {
+                      classes: "section-subheader",
+                      bindings: [{ from: "app.vendor_data", to: "content", transform: vd => vd.name }],
+                    },
+                    {
+                      bindings: [{ from: "app.vendor_data", to: "content", transform: vd => vd.desc }],
+                    },
                   ]
                 },
                 // { content: "<br>", allowHtml: true },
@@ -615,6 +684,7 @@ ready(function() {
   const app = new EnyoApplication({
     placing: ID_NONE,
     vendoring: false,
+    vendor_data: { name: "null", desc: "void", inventory: [] },
     vendor_stay_ticks: 0,
     game_over: false,
     hp: 9,
@@ -627,8 +697,8 @@ ready(function() {
     ],
     money: 10,
     inv: new Model({
-      [ID_ITEM_WOOD     ]: 90,
-      [ID_ITEM_SCREW    ]: 92,
+      [ID_ITEM_WOOD     ]: 15,
+      [ID_ITEM_SCREW    ]:  3,
       [ID_ITEM_AXE      ]:  2,
       [ID_ITEM_FLARE    ]:  1,
       [ID_ITEM_AIRSTRIKE]:  1,
@@ -1014,10 +1084,20 @@ ready(function() {
       p.y = next_p.y;
     }
 
+    let calced_path = false;
     for (const e of enemies) {
       e.ticks++;
       const UNITS_PER_TICK = 0.001;
 
+      if (e.path == undefined) {
+        if (!calced_path) {
+          calced_path = true;
+          console.log("calced path");
+          e.path = find_path_to_portal(e.x, e.y);
+        }
+        else
+          continue;
+      }
       if (e.path.length == 0) continue;
 
       let next, dist;
@@ -1380,6 +1460,7 @@ ready(function() {
 
           if (mouse_down) {
             walls.push({ from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y } });
+            for (const e of enemies) e.path = undefined;
             finish_place();
           }
           return;
