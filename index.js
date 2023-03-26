@@ -499,9 +499,21 @@ const App = kind({
                   }
                 }
 
-                const choices = [ screwball, survivalist, tinkerer ];
-                const choice = choices[Math.floor(Math.random() * choices.length)]();
-                this.app.set("vendor_data", choice);
+                const vendors_seen = app.get("vendors_seen");
+                const choose = arr => arr[Math.floor(Math.random() * arr.length)];
+                let vendor_fn;
+
+                if (vendors_seen == 0)
+                  vendor_fn = screwball;
+                else if (vendor_fn == 1)
+                  vendor_fn = survivalist;
+                else if (vendor_fn < 4)
+                  vendor_fn = choose([screwball, survivalist]);
+                else
+                  vendor_fn = choose([screwball, survivalist, tinkerer]);
+
+                app.set("vendors_seen", vendors_seen + 1);
+                this.app.set("vendor_data", vendor_fn());
               },
               style: "height: 2.0em",
               classes: 'recipe-buy-button',
@@ -685,6 +697,7 @@ ready(function() {
     placing: ID_NONE,
     vendoring: false,
     vendor_data: { name: "null", desc: "void", inventory: [] },
+    vendors_seen: 0,
     vendor_stay_ticks: 0,
     game_over: false,
     hp: 9,
