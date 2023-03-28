@@ -505,9 +505,11 @@ const App = kind({
 
                 if (vendors_seen == 0)
                   vendor_fn = screwball;
-                else if (vendor_fn == 1)
+                else if (vendors_seen == 1)
                   vendor_fn = survivalist;
-                else if (vendor_fn < 4)
+                else if (vendors_seen == 2)
+                  vendor_fn = screwball;
+                else if (vendors_seen < 5)
                   vendor_fn = choose([screwball, survivalist]);
                 else
                   vendor_fn = choose([screwball, survivalist, tinkerer]);
@@ -731,6 +733,10 @@ ready(function() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
   })();
+
+  /* canvas assets */
+  const axe = new Image();
+  axe.src = `assets/${id_to_slug[ID_ITEM_AXE]}.svg`;
 
   let mouse_x = 0;
   let mouse_y = 0;
@@ -1032,13 +1038,24 @@ ready(function() {
           let enemy_count = 0;
           console.log(`spawning wave of ${window.wave_size} enemies`);
           (function enemy() {
+            const spawn_point = trees[Math.floor(Math.random()*trees.length)]
+            if (spawn_point == undefined)
+              alert("well done, you beat the game!");
+
             enemy_count++;
             if (enemy_count <= window.wave_size)
               tick_timeouts.push({ fn: enemy, ticks: Math.floor(0.8*TPS) });
 
-            const { x, y } = trees[Math.floor(Math.random()*trees.length)];
+            const { x, y } = spawn_point;
             const path = find_path_to_portal(x, y);
-            enemies.push({ x, y, ticks: 0, path });
+
+            let hp = 1;
+                 if (window.wave_size > 20) hp += Math.floor(Math.random() * 1.3),
+                                            hp += Math.floor(Math.random() * 1.3);
+            else if (window.wave_size > 15) hp += Math.floor(Math.random() * 1.2),
+                                            hp += Math.floor(Math.random() * 1.2);
+            else if (window.wave_size > 10) hp += Math.floor(Math.random() * 1.2);
+            enemies.push({ x, y, ticks: 0, path, hp, max_hp: hp });
           })();
 
           cleanups.push(() => {
@@ -1057,7 +1074,6 @@ ready(function() {
           const inv = app.inv;
           inv.set(ID_ITEM_AXE, inv.get(ID_ITEM_AXE) + 1);
           inv.set(ID_ITEM_WOOD, inv.get(ID_ITEM_WOOD) + Math.floor(lerp(3, 5, Math.random())));
-
         }
       }
     }
@@ -1082,8 +1098,11 @@ ready(function() {
         const dist = point_to_point(p.x, p.y, e.x, e.y);
         if (dist < 0.02) {
           kill_p(p);
-          kill_e(e);
-          app.set('money', app.get('money')+1);
+          e.hp--;
+          if (e.hp == 0) {
+            kill_e(e);
+            app.set('money', app.get('money')+1);
+          }
           break;
         }
       }
@@ -1257,59 +1276,87 @@ ready(function() {
       ctx.fillStyle = "#76609f";
       ctx.fillRect(x + size/-2, y + size/-2, size, size);
     }
-    
+
+    function axe_chopping(x, y, rot, size=0.05) {
+      if (!axe.complete) return;
+
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(rot);
+      ctx.translate(-size*0.8, -size*0.8);
+
+      const swing = 1 + 0.6*(1 - Math.abs(Math.sin(0.005*now)));
+      ctx.rotate(Math.PI/2 - swing*Math.PI);
+      ctx.drawImage(axe, -size*0.8, -size*0.8, size, size);
+      ctx.restore();
+    }
+    function axe_icon(x, y, size, opacity) {
+      if (!axe.complete) return;
+
+      ctx.globalAlpha = opacity;
+      ctx.save();
+      ctx.translate(x - size/4, y - size/4);
+      ctx.drawImage(axe, size/-4, size/-4, size, size);
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+
     let mouse = new DOMPoint(mouse_x, mouse_y, 0, 1).matrixTransform(screen_to_world);
+    let closest = trees.reduce((a, t) => {
+      const dist = point_to_point(t.x, t.y, mouse.x, mouse.y);
+      if (dist < a.dist) return { t, dist };
+      return a;
+    }, { t: undefined, dist: 0.1 });
     for (const tree of trees) {
       const { x, y, rot, seed } = tree;
       const size = 0.04;
 
+      if (tree.being_chopped) axe_chopping(x, y, rot);
+
       for (let i = 0; i < 2; i++) {
-        if (app.placing == ID_ITEM_AXE) {
-          i = +!i;
-        }
         ctx.fillStyle = i ? "#609f6d" : "#54895f" ;
-
-        if (app.placing == ID_ITEM_AXE && !tree.being_chopped) {
-          const hover = point_to_point(mouse.x, mouse.y, x, y) < size*2;
-          ctx.fillStyle = "#9f6060"
-
-          if (mouse_down && hover) {
-            const ticks = 15*TPS;
-            app.timers.push({
-              time: 1, ticks,
-              text: "axe done", icon: "axe",
-            });
-            tree.being_chopped = 1;
-            tick_timeouts.push({
-              fn: () => trees.splice(trees.indexOf(tree), 1),
-              ticks
-            });
-
-            const key = ID_ITEM_AXE;
-            const inv = app.inv;
-            inv.set(key, inv.get(key) - 1);
-
-            app.set('placing', ID_NONE);
-          }
-        }
 
         ctx.save();
         ctx.translate(x, y);
         ctx.rotate(rot + (0.1*seed + 0.3)*Math.PI*i);
-        if (tree.being_chopped) {
-          const scale = 1 + 0.2*Math.sin(0.01*now);
-          ctx.scale(scale, scale);
-        }
         ctx.fillRect(size/-2, size/-2, size, size);
         ctx.restore();
       }
+      if (app.placing == ID_ITEM_AXE && !tree.being_chopped) {
+        const hover = (closest.t == tree);
+
+        axe_icon(x, y, size, hover ? lerp(0.5, 1.0, 1-closest.dist/0.1) : 0.3);
+
+        if (mouse_down && hover) {
+          const ticks = 15*TPS;
+          app.timers.push({
+            time: 1, ticks,
+            text: "axe done", icon: "axe",
+          });
+          tree.being_chopped = 1;
+          tick_timeouts.push({
+            fn: () => trees.splice(trees.indexOf(tree), 1),
+            ticks
+          });
+
+          const key = ID_ITEM_AXE;
+          const inv = app.inv;
+          inv.set(key, inv.get(key) - 1);
+
+          app.set('placing', ID_NONE);
+        }
+      }
+
     }
 
     // const ROAD_COLOR = i ? "#6575a6" : "#57658f";
 
-    for (const { x, y } of enemies) {
+    ctx.globalAlpha = 1;
+    for (const { x, y, hp, max_hp } of enemies) {
       const size = 0.03;
-      ctx.fillStyle = "#9f6060";
+      if (hp == 1) ctx.fillStyle = "#9f6060";
+      if (hp == 2) ctx.fillStyle = "#6b3636";
+      if (hp == 3) ctx.fillStyle = "#561c1c";
       ctx.fillRect(x + size/-2, y + size/-2, size, size);
     }
 
@@ -1383,9 +1430,52 @@ ready(function() {
       ctx.strokeStyle = WALL_COLOR;
       ctx.stroke();
     }
+
     const _walls = walls_stuck_out(0.03);
     for (const { from, to } of _walls)
       draw_wall(from, to);
+
+    closest = walls.reduce((a, w) => {
+      const dist = point_to_line(w.to, w.from, mouse.x, mouse.y);
+      if (dist < a.dist) return { w, dist };
+      return a;
+    }, closest);
+    for (const wall of walls) {
+      const { from, to } = wall;
+      const x = lerp(from.x, to.x, 0.5);
+      const y = lerp(from.y, to.y, 0.5);
+
+      if (wall.being_chopped) axe_chopping(x, y, Math.PI/2 - Math.atan2(from.y - to.y, from.x - to.x));
+
+      if (app.placing == ID_ITEM_AXE && !wall.being_chopped) {
+        const hover = (closest.w == wall);
+
+        axe_icon(x, y, 0.05, hover ? lerp(0.5, 1.0, 1-closest.dist/0.1) : 0.3);
+
+        if (mouse_down && hover) {
+          const ticks = 5*TPS;
+          app.timers.push({
+            time: 1, ticks,
+            text: "axe done", icon: "axe",
+          });
+          wall.being_chopped = 1;
+          tick_timeouts.push({
+            fn: () => {
+              for (const e of enemies) e.path = undefined;
+              walls.splice(walls.indexOf(wall), 1);
+            },
+            ticks
+          });
+
+          const key = ID_ITEM_AXE;
+          const inv = app.inv;
+          inv.set(key, inv.get(key) - 1);
+
+          app.set('placing', ID_NONE);
+        }
+      }
+    }
+
 
     if (
       app.placing == ID_TRAP_WALL ||

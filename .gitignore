@@ -1,3 +1,4 @@
 .enyocache
 dist/
 lib/
+*.swp
