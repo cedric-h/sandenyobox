@@ -750,8 +750,8 @@ ready(function() {
     ],
     money: 10,
     inv: new Model({
-      [ID_ITEM_WOOD     ]: 15,
-      [ID_ITEM_SCREW    ]:  5,
+      [ID_ITEM_WOOD     ]: 1500,
+      [ID_ITEM_SCREW    ]:  500,
       [ID_ITEM_AXE      ]:  2,
       [ID_ITEM_FLARE    ]:  1,
       [ID_ITEM_AIRSTRIKE]:  1,
@@ -803,6 +803,7 @@ ready(function() {
     // { x: -0.30, y: -0.20, rot: Math.PI/2, ticks: 0, kind: ID_TRAP_PISTON }
   ];
   const enemies = [];
+  const axes = [];
   const projectiles = [];
   const $ = i => ({ x: traps[i].x, y: traps[i].y });
   const walls = [{ from: $(0), to: $(1) },
@@ -858,7 +859,7 @@ ready(function() {
     trees.push(ret);
   }
 
-  function find_path_to_portal(start_x, start_y, ctx) {
+  function find_path(start_x, start_y, end_x, end_y, ctx) {
     const POI_WALL_OUT    = 0.020; /* how far walls for POI generation are stuck out */
     const NODE_PAD        = 0.045; /* how far out control nodes are placed from POIs */
     const REGION_MAX      = 0.105*Math.PI*2; /* radians around POI per control node */
@@ -1000,8 +1001,8 @@ ready(function() {
     }
 
     let start, end;
-    control_nodes.push(start = { x: start_x , y: start_y , connects: [] });
-    control_nodes.push(  end = { x: PORTAL_X, y: PORTAL_Y, connects: [] });
+    control_nodes.push(start = { x: start_x, y: start_y, connects: [] });
+    control_nodes.push(  end = { x:   end_x, y:   end_y, connects: [] });
 
     const pairs = [];
     const vis_walls = walls_stuck_out(VIS_WALL_OUT);
@@ -1094,7 +1095,6 @@ ready(function() {
     return ret.reverse().map(x => x.from);
   }
 
-
   let screen_to_world;
   function tick() {
     // if (screen_to_world) {
@@ -1157,7 +1157,6 @@ ready(function() {
               tick_timeouts.push({ fn: enemy, ticks: Math.floor(0.8*TPS) });
 
             const { x, y } = spawn_point;
-            const path = find_path_to_portal(x, y);
 
             let hp = 1;
                  if (window.wave_size > 20) hp += Math.floor(Math.random() * 1.3),
@@ -1165,7 +1164,7 @@ ready(function() {
             else if (window.wave_size > 15) hp += Math.floor(Math.random() * 1.2),
                                             hp += Math.floor(Math.random() * 1.2);
             else if (window.wave_size > 10) hp += Math.floor(Math.random() * 1.2);
-            enemies.push({ x, y, ticks: 0, path, hp, max_hp: hp });
+            enemies.push({ x, y, ticks: 0, hp, max_hp: hp });
           })();
 
           cleanups.push(() => {
@@ -1235,7 +1234,7 @@ ready(function() {
         if (!calced_path) {
           calced_path = true;
           console.log("calced path");
-          e.path = find_path_to_portal(e.x, e.y);
+          e.path = find_path(e.x, e.y, PORTAL_X, PORTAL_Y);
         }
         else
           continue;
@@ -1277,6 +1276,61 @@ ready(function() {
 
       e.x += move_x;
       e.y += move_y;
+    }
+
+    for (const a of axes) {
+      const UNITS_PER_TICK = 0.002;
+
+      if (a.tree.being_chopped || trees.indexOf(a.tree) == -1)
+        cleanups.push(a => {
+          axes.splice(axes.indexOf(a), 1);
+
+          const key = ID_ITEM_AXE;
+          const inv = app.inv;
+          inv.set(key, inv.get(key) + 1);
+        });
+
+      if (a.path == undefined) {
+        a.path = find_path(a.x, a.y, a.tree.x, a.tree.y);
+      }
+
+      if (a.path.length == 0) continue;
+
+      let next, dist;
+      do {
+        next = a.path[0];
+        dist = point_to_point(a.x, a.y, next.x, next.y);
+        if (dist < 0.001) {
+          a.path.shift();
+        }
+        else break;
+      } while (a.path.length);
+
+      /* HONEY I'M HOOOOOME */
+      if (a.path.length == 0) {
+        cleanups.push(() => {
+          const ticks = 5*TPS;
+          axes.splice(axes.indexOf(a), 1);
+          app.timers.push({
+            time: 1, ticks,
+            text: "axe done", icon: "axe",
+          });
+          a.tree.being_chopped = 1;
+          tick_timeouts.push({
+            fn: () => trees.splice(trees.indexOf(a.tree), 1),
+            ticks
+          });
+        });
+        continue;
+      }
+
+      let delta_x = (next.x - a.x) / dist;
+      let delta_y = (next.y - a.y) / dist;
+      let move_x = delta_x * UNITS_PER_TICK;
+      let move_y = delta_y * UNITS_PER_TICK;
+
+      a.x += move_x;
+      a.y += move_y;
     }
 
     for (const trap of traps) {
@@ -1432,22 +1486,13 @@ ready(function() {
         ctx.fillRect(size/-2, size/-2, size, size);
         ctx.restore();
       }
-      if (app.placing == ID_ITEM_AXE && !tree.being_chopped) {
+      if (app.placing == ID_ITEM_AXE && !tree.being_chopped && !axes.some(a => a.tree == tree)) {
         const hover = (closest.t == tree);
 
         axe_icon(x, y, size, hover ? lerp(0.5, 1.0, 1-closest.dist/0.1) : 0.3);
 
         if (mouse_down && hover) {
-          const ticks = 15*TPS;
-          app.timers.push({
-            time: 1, ticks,
-            text: "axe done", icon: "axe",
-          });
-          tree.being_chopped = 1;
-          tick_timeouts.push({
-            fn: () => trees.splice(trees.indexOf(tree), 1),
-            ticks
-          });
+          axes.push({ x: PORTAL_X, y: PORTAL_Y, tree });
 
           const key = ID_ITEM_AXE;
           const inv = app.inv;
@@ -1503,6 +1548,10 @@ ready(function() {
             sub_size, sub_size
           );
         }
+    }
+
+    for (const { x, y } of axes) {
+      axe_icon(x, y + 0.02*(1 - Math.abs(Math.sin(0.008*now))), 0.03, 1);
     }
 
     for (const { x, y, rot } of projectiles) {
@@ -1630,6 +1679,7 @@ ready(function() {
         /* (not-quite) quadratic perf goes weee */
         const pairs = [];
         const key = pt => Math.floor(pt.x * 1000) + ',' + Math.floor(pt.y * 1000);
+        const in_walls = walls_stuck_out(-0.025*1.5);
         for (const from of posts) {
           const from_key = key(from);
           for (const to of posts) {
@@ -1644,8 +1694,8 @@ ready(function() {
                 break;
               }
             }
-            for (const { from: l, to: r } of walls) {
-              if (line_hits_line(l, r, from, to)) {
+            for (const { from: l, to: r } of in_walls) {
+              if (line_to_line(l, r, from, to) < 0.023) {
                 push = false;
                 break;
               }
@@ -1661,7 +1711,7 @@ ready(function() {
               }
             }
             for (const t of trees)
-              if (point_to_line(from, to, t.x, t.y) < 0.035) {
+              if (point_to_line(from, to, t.x, t.y) < 0.025) {
                 push = false;
                 break;
               }
@@ -1772,7 +1822,7 @@ ready(function() {
       }
     }
 
-    if (0) find_path_to_portal(mouse.x, mouse.y, ctx);
+    if (0) find_path(mouse.x, mouse.y, PORTAL_X, PORTAL_Y, ctx);
 
     ctx.restore();
   });
