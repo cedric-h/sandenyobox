@@ -1,4 +1,5 @@
 // vim: sw=2 ts=2 expandtab smartindent ft=javascript
+const DEBUG_VIS = 1;
 
 const ready = require('enyo/ready'),
       kind = require('enyo/kind');
@@ -28,9 +29,11 @@ function ease_out_expo(x) {
 function ease_in_expo(x) {
   return x === 0 ? 0 : Math.pow(2, 10 * x - 10);
 }
+/* squared distance from point to point (dot product with itself) */
 function point_to_point2(x0, y0, x1, y1) {
   return Math.pow(x0 - x1, 2) + Math.pow(y0 - y1, 2);
 }
+/* squared distance from point to line */
 function point_to_line2(v, w, p_x, p_y) {
   const l2 = point_to_point2(v.x, v.y, w.x, w.y);
   if (l2 == 0) return point_to_point2(p_x, p_y, v.x, v.y);
@@ -60,6 +63,17 @@ function line_hits_line(from0, to0, from1, to1) {
     return (0 < lambda && lambda < 1) && (0 < gamma && gamma < 1);
   }
 }
+/* returns distance from line to line */
+function line_to_line(from0, to0, from1, to1) {
+  if (line_hits_line(from0, to0, from1, to1))
+    return 0;
+  return Math.min(
+    point_to_line(from0, to0, from1.x, from1.y),
+    point_to_line(from0, to0,   to1.x,   to1.y),
+    point_to_line(from1, to1, from0.x, from0.y),
+    point_to_line(from1, to1,   to0.x,   to0.y)
+  );
+}
 function vec2_reflect(vx, vy, nx, ny) {
   const vdotn = vx*nx + vy*ny;
   return {
@@ -73,7 +87,12 @@ function rad_distance(a, b) {
         distance = fmodf(2.0 * difference, Math.PI*2.0) - difference;
   return distance;
 }
-
+function rad_lerp(a, b, t) {
+  const fmodf = (l, r) => l % r;
+  const difference = fmodf(b - a, Math.PI*2.0),
+        distance = fmodf(2.0 * difference, Math.PI*2.0) - difference;
+  return a + distance * t;
+}
 
 let _id = 0;
 const ID_NONE           = _id++;
@@ -395,20 +414,39 @@ const App = kind({
     {
       classes: "sidebar sidesidebar",
       bindings: [
-        { from: "app.vendoring", to: "style", transform: p => p ? "" : "height: fit-content;" },
         /* referencing these directly in the computed property doesn't work, so we copy them in and never use them */
         { from: "app.game_over",         to: "game_over" },
         { from: "app.vendor_stay_ticks", to: "vendor_stay_ticks" },
+
+        { from: "app.vendoring", to: "vendoring" },
+        { from: "app.placing",   to: "placing" },
       ],
-      computed: [{ method: "set_showing", path: [ "game_over", "vendor_stay_ticks" ] }],
-      set_showing() {
-        if (this.app.get("vendor_stay_ticks") < Math.floor(TPS*3))
-          this.set("classes", "sidebar sidesidebar vendor-panic-hard");
-        else if (this.app.get("vendor_stay_ticks") < Math.floor(TPS*5))
-          this.set("classes", "sidebar sidesidebar vendor-panic");
-        else
-          this.set("classes", "sidebar sidesidebar");
-        this.set("showing", !this.app.get("game_over") && this.app.get("vendor_stay_ticks") > 0);
+      computed: [
+        { method: "set_styles", path: [ "game_over", "vendor_stay_ticks", "vendoring", "placing" ] },
+      ],
+      set_styles() {
+        let styles = "";
+        {
+          if (!this.get("app.vendoring")) styles += "height: fit-content; ";
+          if ( this.get("app.placing")  ) styles += "filter: opacity(30%); pointer-events: none; ";
+
+          const showing = !this.app.get("game_over") && (this.app.get("vendor_stay_ticks") > 0);
+          if (!showing) styles += "display: none;";
+        }
+        this.set("style", styles);
+
+        let classes = "sidebar sidesidebar";
+        {
+          const vendoring = this.get("vendoring");
+          const stay_ticks = this.app.get("vendor_stay_ticks");
+          if (!vendoring) {
+            if (     stay_ticks < Math.floor(TPS*3))
+              classes += " vendor-panic-hard";
+            else if (stay_ticks < Math.floor(TPS*5))
+              classes += " vendor-panic";
+          }
+        }
+        this.set("classes", classes);
       },
       components: [
         {
@@ -713,7 +751,7 @@ ready(function() {
     money: 10,
     inv: new Model({
       [ID_ITEM_WOOD     ]: 15,
-      [ID_ITEM_SCREW    ]:  3,
+      [ID_ITEM_SCREW    ]:  5,
       [ID_ITEM_AXE      ]:  2,
       [ID_ITEM_FLARE    ]:  1,
       [ID_ITEM_AIRSTRIKE]:  1,
@@ -821,75 +859,154 @@ ready(function() {
   }
 
   function find_path_to_portal(start_x, start_y, ctx) {
-    const WALL_PAD = 0.07;
-    const LONE_PAD = 0.05;
+    const POI_WALL_OUT    = 0.020; /* how far walls for POI generation are stuck out */
+    const NODE_PAD        = 0.045; /* how far out control nodes are placed from POIs */
+    const REGION_MAX      = 0.105*Math.PI*2; /* radians around POI per control node */
+    const NODE_WALL_OUT   = 0.001; /* how far walls for node-in-wall prefilter are stuck out */
+    const NODE_WALL_THICK = 0.038; /* how thick are walls for node-in-wall prefilter */
+    const COMBINE_DIST    = 0.025; /* how close together nodes need to be to be joined */
+    const WALL_THICK      = 0.038; /* proximity to post/wall beneath which a visibility path gets filtered out */
+    const VIS_WALL_OUT    = 0.005; /* how far walls for visibility checks are stuck out */
 
-    /* make walls that stick out a bit past their posts */
-    let posts = [];
-    const _walls = walls_stuck_out(WALL_PAD);
-    for (const { from, to } of _walls) {
-      let { x: from_x, y: from_y } = from;
-      let { x:   to_x, y:   to_y } = to  ;
-      posts.push({ x: from_x, y: from_y, connects: [] });
-      posts.push({ x:   to_x, y:   to_y, connects: [] });
+    const pois = new Map();
+    let control_nodes = [];
+    const key = pt => Math.floor(pt.x * 1000) + ',' + Math.floor(pt.y * 1000);
+
+    for (const { from, to } of walls.concat(walls_stuck_out(POI_WALL_OUT))) {
+      const from_key = key(from);
+      const   to_key = key(  to);
+      if (!pois.has(from_key)) pois.set(from_key, { pt: from, connects: [] });
+      if (!pois.has(  to_key)) pois.set(  to_key, { pt:   to, connects: [] });
+
+      pois.get(from_key).connects.push(  to);
+      pois.get(  to_key).connects.push(from);
     }
+    for (let poi of pois.values()) {
+      let { pt, connects } = poi;
+      const node_regions = connects.map(ct => {
+        const delta_x = ct.x - pt.x;
+        const delta_y = ct.y - pt.y;
+        const atan2 = Math.atan2(delta_y, delta_x);
+        if (atan2 < 0) return Math.PI*2 + atan2;
+        return atan2;
+      });
+      node_regions.sort((a, b) => a - b);
 
-    /* cubic performance LET'S FUCKING GOOOO */
-    const extra_posts = [];
-    const wall_traps = traps.filter(t => t.kind == ID_TRAP_WALL);
-    for (const from of posts) {
-      for (const to of posts) {
-        for (const p of wall_traps) (() => {
-          if (from == to) return;
+      const split_regions = [];
+      // const artificial_regions = new Set();
+      for (let i = 0; i < node_regions.length; i++) {
+        let rad = node_regions[i];
+        let next = node_regions[i+1];
+        if (next == undefined) next = Math.PI*2 + node_regions[0];
 
-          for (const { from: l, to: r } of _walls)
-            if (line_hits_line(l, r, from, to))
-              return;
-
-          if (p != from  && p != to  &&
-              point_to_line(from, to, p.x, p.y) < 0.05) {
-
-            let near_x, near_y;
-            let  far_x,  far_y;
-            if (point_to_point(p.x, p.y, from.x, from.y) <
-                point_to_point(p.x, p.y,   to.x,   to.y))
-              near_x = from.x,  far_x =   to.x,
-              near_y = from.y,  far_y =   to.y;
-            else
-              near_x =   to.x,  far_x = from.x,
-              near_y =   to.y,  far_y = from.y;
-
-            const len = point_to_point(near_x, near_y, far_x, far_y);
-            const tan_x = (near_x - far_x) / len;
-            const tan_y = (near_y - far_y) / len;
-
-            let norm_x, norm_y;
-            if (((near_x - far_x) * (p.y - far_y) - (near_y - far_y) * (p.x - far_x)) < 0)
-              norm_x =  tan_y,
-              norm_y = -tan_x;
-            else
-              norm_x = -tan_y,
-              norm_y =  tan_x;
-
-            extra_posts.push({
-              x: p.x + norm_x*LONE_PAD,
-              y: p.y + norm_y*LONE_PAD,
-              connects: []
-            });
+        split_regions.push(rad);
+        const delta = (next - rad);
+        if (delta > REGION_MAX) {
+          const new_regions = Math.ceil(delta/REGION_MAX); /* one more than actual new region count */
+          for (let i = 1; i < new_regions; i++) {
+            const artificial = lerp(rad, next, i/new_regions);
+            // artificial_regions.add(artificial);
+            split_regions.push(artificial);
           }
-        })();
+        }
+      }
+
+      if (DEBUG_VIS && ctx && 0) for (const theta of split_regions) {
+        const dist = 0.07;
+        // const theta = theta;
+        const node_x = pt.x + Math.cos(theta) * dist;
+        const node_y = pt.y + Math.sin(theta) * dist;
+        ctx.beginPath();
+        ctx.moveTo(pt.x, pt.y);
+        ctx.lineTo(node_x, node_y);
+        ctx.lineWidth = 0.005;
+        ctx.globalAlpha = 0.5;
+        ctx.strokeStyle = "magenta";
+        ctx.stroke();
+      }
+
+      /* write into control_nodes */
+      for (let i = 0; i < split_regions.length; i++) {
+        let this_rad = split_regions[i];
+        let next_rad = split_regions[i+1];
+        if (next_rad == undefined) next_rad = Math.PI*2 + split_regions[0];
+
+        const theta = (this_rad + next_rad)/2;
+        let cornerness = inv_lerp(Math.PI*2*0.16, 0, next_rad - this_rad);
+        cornerness = Math.max(0, cornerness, Math.min(1, cornerness));
+        const dist = NODE_PAD * lerp(0.5, 2, cornerness);
+        const node_x = pt.x + Math.cos(theta) * dist;
+        const node_y = pt.y + Math.sin(theta) * dist;
+
+        control_nodes.push({ x: node_x, y: node_y, connects: [] });
+        if (DEBUG_VIS && ctx && 0) {
+          ctx.beginPath();
+          ctx.globalAlpha = lerp(0.2, 1, cornerness);
+          const size = 0.07;
+          ctx.arc(node_x, node_y, size*0.2, 0, Math.PI*2);
+          ctx.fillStyle = "pink";
+          ctx.fill();
+        }
       }
     }
-    posts = posts.concat(extra_posts);
+
+    /* filter out nodes that are inside of walls */
+    const node_walls = walls_stuck_out(NODE_WALL_OUT);
+    control_nodes = control_nodes.filter(n => {
+      for (const { from: l, to: r } of node_walls) {
+        const dist = point_to_line(l, r, n.x, n.y);
+        if (dist < NODE_WALL_THICK)
+          return false;
+      }
+
+      return true;
+    });
+
+    /* combine close together nodes */
+    while (true) {
+      let closest_pair;
+      let closest_dist = COMBINE_DIST;
+      for (const o of control_nodes)
+        for (const p of control_nodes) {
+          if (o == p) continue;
+
+          const dist = point_to_point(o.x, o.y, p.x, p.y);
+          if (dist < closest_dist) {
+            closest_pair = [o, p];
+            closest_dist = dist;
+          }
+        }
+      if (closest_pair) {
+        const [o, p] = closest_pair;
+        control_nodes.splice(control_nodes.indexOf(o), 1);
+        control_nodes.splice(control_nodes.indexOf(p), 1);
+        control_nodes.push({
+          x: lerp(o.x, p.x, 0.5),
+          y: lerp(o.y, p.y, 0.5),
+          connects: []
+        });
+      }
+      else
+        break;
+    }
+
+    if (DEBUG_VIS && ctx) for (const { x: node_x, y: node_y } of control_nodes) {
+      const size = 0.07;
+      ctx.beginPath();
+      ctx.globalAlpha = 0.2;
+      ctx.arc(node_x, node_y, size*0.2, 0, Math.PI*2);
+      ctx.fillStyle = "magenta";
+      ctx.fill();
+    }
 
     let start, end;
-    posts.push(start = { x: start_x,  y: start_y , connects: [] });
-    posts.push(  end = { x: PORTAL_X, y: PORTAL_Y, connects: [] });
+    control_nodes.push(start = { x: start_x , y: start_y , connects: [] });
+    control_nodes.push(  end = { x: PORTAL_X, y: PORTAL_Y, connects: [] });
 
-    /* (not-quite) quadratic perf goes weee */
     const pairs = [];
-    for (const from of posts) {
-      for (const to of posts) {
+    const vis_walls = walls_stuck_out(VIS_WALL_OUT);
+    for (const from of control_nodes)
+      for (const to of control_nodes) {
         if (from == to) continue;
 
         let push = true;
@@ -900,19 +1017,25 @@ ready(function() {
             break;
           }
         }
-        for (const { from: l, to: r } of _walls) {
-          if (line_hits_line(l, r, from, to)) {
+
+        let hit = false;
+        for (const { from: l, to: r } of vis_walls) {
+          const dist = line_to_line(l, r, from, to);
+          if (dist < WALL_THICK) {
             push = false;
+            hit = true;
             break;
           }
         }
-        for (const p of wall_traps) {
-          if (p != from  && p != to  &&
-              p != start && p != end &&
-              point_to_line(from, to, p.x, p.y) < 0.02) {
-            push = false;
-            break;
-          }
+
+        if (DEBUG_VIS && ctx) {
+          ctx.beginPath();
+          ctx.moveTo(from.x, from.y);
+          ctx.lineTo(  to.x,   to.y);
+          ctx.lineWidth = 0.01;
+          ctx.globalAlpha = hit ? 0.01 : 0.04;
+          ctx.strokeStyle = hit ? "green" : "blue";
+          ctx.stroke();
         }
 
         if (push) {
@@ -921,7 +1044,6 @@ ready(function() {
           pairs.push({ from, to });
         }
       }
-    }
 
     const frontier = [];
     const came_from = new Map();
@@ -955,22 +1077,10 @@ ready(function() {
       ret.push({ from, to });
     }
 
-    if (ctx) {
-      ctx.globalAlpha = 0.3;
-      for (const { from, to } of pairs) {
-        const WALL_THICK = 0.0195;
-        const WALL_COLOR = "#76609f";
-        ctx.beginPath();
-        ctx.moveTo(from.x, from.y);
-        ctx.lineTo(  to.x,   to.y);
-        ctx.lineWidth = WALL_THICK;
-        ctx.strokeStyle = WALL_COLOR;
-        ctx.stroke();
-      }
-
+    if (DEBUG_VIS && ctx) {
       ctx.globalAlpha = 0.8;
       for (const { from, to } of ret) {
-        const WALL_THICK = 0.0095;
+        const WALL_THICK = 0.03;
         const WALL_COLOR = "#a6656d";
         ctx.beginPath();
         ctx.moveTo(from.x, from.y);
@@ -979,8 +1089,6 @@ ready(function() {
         ctx.strokeStyle = WALL_COLOR;
         ctx.stroke();
       }
-
-      ctx.globalAlpha = 1;
     }
 
     return ret.reverse().map(x => x.from);
@@ -1039,8 +1147,10 @@ ready(function() {
           console.log(`spawning wave of ${window.wave_size} enemies`);
           (function enemy() {
             const spawn_point = trees[Math.floor(Math.random()*trees.length)]
-            if (spawn_point == undefined)
+            if (spawn_point == undefined) {
               alert("well done, you beat the game!");
+              return;
+            }
 
             enemy_count++;
             if (enemy_count <= window.wave_size)
@@ -1352,12 +1462,26 @@ ready(function() {
     // const ROAD_COLOR = i ? "#6575a6" : "#57658f";
 
     ctx.globalAlpha = 1;
-    for (const { x, y, hp, max_hp } of enemies) {
+    for (const e of enemies) {
+      const { x, y, hp, path } = e;
+
       const size = 0.03;
       if (hp == 1) ctx.fillStyle = "#9f6060";
       if (hp == 2) ctx.fillStyle = "#6b3636";
       if (hp == 3) ctx.fillStyle = "#561c1c";
-      ctx.fillRect(x + size/-2, y + size/-2, size, size);
+      ctx.save();
+      ctx.translate(x, y);
+      if (path && path.length) {
+        if (e.rot == undefined) e.rot = 0;
+
+        const ideal_rot = Math.atan2(y - path[0].y, x - path[0].x);
+        const distance = rad_distance(e.rot, ideal_rot);
+        const force = Math.min(0.06, Math.abs(distance));
+        e.rot += force*Math.sign(distance);
+        ctx.rotate(e.rot);
+      }
+      ctx.fillRect(size/-2, size/-2, size, size);
+      ctx.restore();
     }
 
     {
