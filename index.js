@@ -750,8 +750,8 @@ ready(function() {
     ],
     money: 10,
     inv: new Model({
-      [ID_ITEM_WOOD     ]: 1500,
-      [ID_ITEM_SCREW    ]:  500,
+      [ID_ITEM_WOOD     ]: 15,
+      [ID_ITEM_SCREW    ]:  5,
       [ID_ITEM_AXE      ]:  2,
       [ID_ITEM_FLARE    ]:  1,
       [ID_ITEM_AIRSTRIKE]:  1,
