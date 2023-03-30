@@ -94,11 +94,28 @@ function rad_lerp(a, b, t) {
   return a + distance * t;
 }
 
+const PFO = { /* pathfinding options */
+  POI_WALL_OUT   : 0.020, /* how far walls for POI generation are stuck out */
+  NODE_PAD       : 0.045, /* how far out control nodes are placed from POIs */
+  REGION_MAX     : 0.105*Math.PI*2, /* radians around POI per control node */
+  NODE_WALL_OUT  : 0.001, /* how far walls for node-in-wall prefilter are stuck out */
+  NODE_WALL_THICK: 0.038, /* how thick are walls for node-in-wall prefilter */
+  COMBINE_DIST   : 0.025, /* how close together nodes need to be to be joined */
+  WALL_THICK     : 0.038, /* proximity to post/wall beneath which a visibility path gets filtered out */
+  VIS_WALL_OUT   : 0.005, /* how far walls for visibility checks are stuck out */
+};
+
+
+const MODAL_NONE = 0;
+const MODAL_LOST = 1;
+const MODAL_WON  = 2;
+
 let _id = 0;
 const ID_NONE           = _id++;
 const ID_ITEM_WOOD      = _id++;
 const ID_ITEM_SCREW     = _id++;
 const ID_ITEM_AXE       = _id++;
+const ID_ITEM_PICK      = _id++;
 const ID_ITEM_FLARE     = _id++;
 const ID_ITEM_AIRSTRIKE = _id++;
 const ID_ITEM_PC        = _id++;
@@ -124,6 +141,7 @@ const id_to_slug = {
   [ID_ITEM_WOOD     ]: "wood",
   [ID_ITEM_SCREW    ]: "screw",
   [ID_ITEM_AXE      ]: "axe",
+  [ID_ITEM_PICK     ]: "pick",
   [ID_ITEM_FLARE    ]: "flare",
   [ID_ITEM_AIRSTRIKE]: "airstrike",
   [ID_ITEM_PC       ]: "targeting_computer",
@@ -139,6 +157,7 @@ const id_to_name = {
   [ID_ITEM_WOOD     ]: "wood",
   [ID_ITEM_SCREW    ]: "screw",
   [ID_ITEM_AXE      ]: "axe",
+  [ID_ITEM_PICK     ]: "pick",
   [ID_ITEM_FLARE    ]: "red flare",
   [ID_ITEM_AIRSTRIKE]: "airstrike",
   [ID_ITEM_PC       ]: "targeting computer",
@@ -172,6 +191,283 @@ const trap_to_recipe = {
   [ID_TRAP_AUTO     ]: { [ID_ITEM_WOOD]: 50, [ID_ITEM_SCREW]: 40, [ID_ITEM_PC]: 1 },
 };
 
+const PORTAL_X = 0;
+const PORTAL_Y = 0;
+
+function sim_empty() {
+  return {
+    hp: 9,
+    /* blunt tool used to prevent too many expensive calculations from happening on the same frame */
+    tired: false,
+    level: 0,
+    axes: [],
+    traps: [],
+    walls: [],
+    trees: [],
+    enemies: [],
+    projectiles: [],
+    tick_timeouts: [], /* TODO: make serializable */
+  };
+}
+function inv_start(level = 0) {
+  if (level == 0)
+    return new Model({
+      [ID_ITEM_WOOD     ]: 15,
+      [ID_ITEM_SCREW    ]:  5,
+      [ID_ITEM_AXE      ]:  2,
+      [ID_ITEM_PICK     ]:  0,
+      [ID_ITEM_FLARE    ]:  1,
+      [ID_ITEM_AIRSTRIKE]:  1,
+      [ID_ITEM_PC       ]:  0,
+      [ID_ITEM_BOOK     ]:  0,
+      [ID_NONE          ]:  0,
+    });
+  if (level == 1)
+    return new Model({
+      [ID_ITEM_WOOD     ]: 30,
+      [ID_ITEM_SCREW    ]: 15,
+      [ID_ITEM_AXE      ]:  2,
+      [ID_ITEM_PICK     ]:  0,
+      [ID_ITEM_FLARE    ]:  1,
+      [ID_ITEM_AIRSTRIKE]:  1,
+      [ID_ITEM_PC       ]:  0,
+      [ID_ITEM_BOOK     ]:  0,
+      [ID_NONE          ]:  0,
+    });
+}
+
+function timers_start() {
+  return [
+    { time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" },
+    { time: 1, ticks:  5*TPS, text: "vendor", icon: "vendor" },
+    // { time: "1:35", text: "enemies",  icon: "wave",   },
+    // { time: "0:40", text: "vendor",   icon: "vendor", },
+    // { time: "0:01", text: "axe done", icon: "axe",    }
+  ];
+}
+
+function sim_spawn_trees(sim, tree_count) {
+  const { walls, trees } = sim;
+
+  let _i = 0;
+  while (trees.length < tree_count && _i < 1e7) {
+    _i++;
+    let ret = {
+      x: lerp(-0.5, 0.5, Math.random()),
+      y: lerp(-0.5, 0.5, Math.random()),
+      tier: 0,
+      rot: Math.random() * Math.PI*2,
+      seed: Math.random()
+    };
+
+    /* brute force the constraints; very monte carlo */
+    for (const { x, y } of trees) {
+      if (point_to_point(x, y, ret.x, ret.y) < 0.10) {
+        ret = undefined;
+        break;
+      }
+    }
+    if (ret == undefined) continue;
+
+    if (point_to_point(PORTAL_X, PORTAL_Y, ret.x, ret.y) < 0.10)
+      continue;
+
+    for (const { from, to } of walls) {
+      if (point_to_line(from, to, ret.x, ret.y) < 0.06) {
+        ret = undefined;
+        break;
+      }
+    }
+    if (ret == undefined) continue;
+
+    trees.push(ret);
+  }
+}
+
+function walls_stuck_out(sim, stick_out) {
+  const { walls } = sim;
+
+  const ret = JSON.parse(JSON.stringify(walls));
+  for (const i in ret) {
+    const src = walls[i];
+    const dst = ret[i];
+    const len = point_to_point(dst.from.x, dst.from.y,
+                               dst.  to.x, dst.  to.y);
+    const t = 1 + stick_out/len;
+    dst.from.x = lerp(src.  to.x, src.from.x, t);
+    dst.from.y = lerp(src.  to.y, src.from.y, t);
+    dst.  to.x = lerp(src.from.x, src.  to.x, t);
+    dst.  to.y = lerp(src.from.y, src.  to.y, t);
+  }
+  return ret;
+}
+
+function sim_calc_nav_nodes(sim, ctx) {
+  sim.tired = true;
+  const { walls } = sim;
+
+  const {
+    POI_WALL_OUT   ,
+    NODE_PAD       ,
+    REGION_MAX     ,
+    NODE_WALL_OUT  ,
+    NODE_WALL_THICK,
+    COMBINE_DIST   ,
+    WALL_THICK     ,
+    VIS_WALL_OUT   ,
+  } = PFO;
+
+  const pois = new Map();
+  let control_nodes = [];
+  const key = pt => Math.floor(pt.x * 1000) + ',' + Math.floor(pt.y * 1000);
+
+  for (const { from, to } of walls.concat(walls_stuck_out(sim, POI_WALL_OUT))) {
+    const from_key = key(from);
+    const   to_key = key(  to);
+    if (!pois.has(from_key)) pois.set(from_key, { pt: from, connects: [] });
+    if (!pois.has(  to_key)) pois.set(  to_key, { pt:   to, connects: [] });
+
+    pois.get(from_key).connects.push(  to);
+    pois.get(  to_key).connects.push(from);
+  }
+  for (let poi of pois.values()) {
+    let { pt, connects } = poi;
+    const node_regions = connects.map(ct => {
+      const delta_x = ct.x - pt.x;
+      const delta_y = ct.y - pt.y;
+      const atan2 = Math.atan2(delta_y, delta_x);
+      if (atan2 < 0) return Math.PI*2 + atan2;
+      return atan2;
+    });
+    node_regions.sort((a, b) => a - b);
+
+    const split_regions = [];
+    // const artificial_regions = new Set();
+    for (let i = 0; i < node_regions.length; i++) {
+      let rad = node_regions[i];
+      let next = node_regions[i+1];
+      if (next == undefined) next = Math.PI*2 + node_regions[0];
+
+      split_regions.push(rad);
+      const delta = (next - rad);
+      if (delta > REGION_MAX) {
+        const new_regions = Math.ceil(delta/REGION_MAX); /* one more than actual new region count */
+        for (let i = 1; i < new_regions; i++) {
+          const artificial = lerp(rad, next, i/new_regions);
+          // artificial_regions.add(artificial);
+          split_regions.push(artificial);
+        }
+      }
+    }
+
+    if (DEBUG_VIS && ctx && 0) for (const theta of split_regions) {
+      const dist = 0.07;
+      // const theta = theta;
+      const node_x = pt.x + Math.cos(theta) * dist;
+      const node_y = pt.y + Math.sin(theta) * dist;
+      ctx.beginPath();
+      ctx.moveTo(pt.x, pt.y);
+      ctx.lineTo(node_x, node_y);
+      ctx.lineWidth = 0.005;
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = "magenta";
+      ctx.stroke();
+    }
+
+    /* write into control_nodes */
+    for (let i = 0; i < split_regions.length; i++) {
+      let this_rad = split_regions[i];
+      let next_rad = split_regions[i+1];
+      if (next_rad == undefined) next_rad = Math.PI*2 + split_regions[0];
+
+      const theta = (this_rad + next_rad)/2;
+      let cornerness = inv_lerp(Math.PI*2*0.16, 0, next_rad - this_rad);
+      cornerness = Math.max(0, cornerness, Math.min(1, cornerness));
+      const dist = NODE_PAD * lerp(0.5, 2, cornerness);
+      const node_x = pt.x + Math.cos(theta) * dist;
+      const node_y = pt.y + Math.sin(theta) * dist;
+
+      control_nodes.push({ x: node_x, y: node_y, connects: [] });
+      if (DEBUG_VIS && ctx && 0) {
+        ctx.beginPath();
+        ctx.globalAlpha = lerp(0.2, 1, cornerness);
+        const size = 0.07;
+        ctx.arc(node_x, node_y, size*0.2, 0, Math.PI*2);
+        ctx.fillStyle = "pink";
+        ctx.fill();
+      }
+    }
+  }
+
+  /* filter out nodes that are inside of walls */
+  const node_walls = walls_stuck_out(sim, NODE_WALL_OUT);
+  control_nodes = control_nodes.filter(n => {
+    for (const { from: l, to: r } of node_walls) {
+      const dist = point_to_line(l, r, n.x, n.y);
+      if (dist < NODE_WALL_THICK)
+        return false;
+    }
+
+    return true;
+  });
+
+  /* combine close together nodes */
+  while (true) {
+    let closest_pair;
+    let closest_dist = COMBINE_DIST;
+    for (const o of control_nodes)
+      for (const p of control_nodes) {
+        if (o == p) continue;
+
+        const dist = point_to_point(o.x, o.y, p.x, p.y);
+        if (dist < closest_dist) {
+          closest_pair = [o, p];
+          closest_dist = dist;
+        }
+      }
+    if (closest_pair) {
+      const [o, p] = closest_pair;
+      control_nodes.splice(control_nodes.indexOf(o), 1);
+      control_nodes.splice(control_nodes.indexOf(p), 1);
+      control_nodes.push({
+        x: lerp(o.x, p.x, 0.5),
+        y: lerp(o.y, p.y, 0.5),
+        connects: []
+      });
+    }
+    else
+      break;
+  }
+
+  if (DEBUG_VIS && ctx) for (const { x: node_x, y: node_y } of control_nodes) {
+    const size = 0.07;
+    ctx.beginPath();
+    ctx.globalAlpha = 0.2;
+    ctx.arc(node_x, node_y, size*0.2, 0, Math.PI*2);
+    ctx.fillStyle = "magenta";
+    ctx.fill();
+  }
+  sim.nav_nodes = control_nodes;
+}
+
+function sim_set_tutbuild(sim) {
+  sim.traps = [
+    { x:  0.0836, y:  0.0836, kind: ID_TRAP_WALL },
+    { x: -0.0029, y: -0.2118, kind: ID_TRAP_WALL },
+    { x: -0.2046, y: -0.0303, kind: ID_TRAP_WALL },
+    { x: -0.0476, y: -0.0504, kind: ID_TRAP_WALL },
+    { x: -0.0951, y:  0.0360, kind: ID_TRAP_WALL }
+    // { x: -0.30, y: -0.20, rot: Math.PI/2, ticks: 0, kind: ID_TRAP_PISTON }
+  ];
+  const $ = i => ({ x: sim.traps[i].x, y: sim.traps[i].y });
+  sim.walls = [
+    { from: $(0), to: $(1) },
+    { from: $(4), to: $(2) },
+    { from: $(4), to: $(0) },
+    { from: $(4), to: $(3) }
+  ];
+}
+
 const ItemBox = kind({
   classes: 'item-box-parent',
   iid: ID_NONE,
@@ -188,15 +484,15 @@ const ItemBox = kind({
     { name: 'tooltip', classes: 'item-box-tooltip', tag: 'span' },
   ],
   bindings: [
+    { from: "count", to: '$.count.content' },
     { from: "count", to: "$.img.showing", transform: count => count > 0 },
     { from: "count", to: "$.count.showing", transform: count => count > 0 },
     { from: 'iid', to: '$.img.src', transform: iid => `assets/${id_to_slug[iid]}.svg` },
     { from: 'iid', to: '$.img.alt', transform: iid => id_to_slug[iid] },
-    { from: 'iid', to: '$.img.style'  , transform: iid => 'visibility: ' + ((iid == ID_NONE) ? 'hidden' : 'visible') },
-    { from: 'iid', to: '$.count.style', transform: iid => 'visibility: ' + ((iid == ID_NONE) ? 'hidden' : 'visible') },
+    // { from: 'iid', to: '$.img.style'  , transform: iid => 'visibility: ' + ((iid == ID_NONE) ? 'hidden' : 'visible') },
+    // { from: 'iid', to: '$.count.style', transform: iid => 'visibility: ' + ((iid == ID_NONE) ? 'hidden' : 'visible') },
     { from: 'iid', to: '$.tooltip.showing', transform(iid) { return this.get('enable_tooltips') && iid != ID_NONE } },
     { from: 'iid', to: '$.tooltip.content', transform: iid => id_to_name[iid].toUpperCase() + ': ' + id_to_desc[iid] },
-    { from: 'count', to: '$.count.content' },
   ],
 });
 const InvItemBox = kind({
@@ -204,8 +500,10 @@ const InvItemBox = kind({
   bindings: [{ from: 'model.id', to: 'iid' }],
   handlers: { ontap: 'on_tap' },
   on_tap() {
+    if (this.get("count") <= 0) return;
+
     const id = this.get('model.id');
-    if (id == ID_ITEM_AXE || id == ID_ITEM_AIRSTRIKE)
+    if (id == ID_ITEM_PICK || id == ID_ITEM_AXE || id == ID_ITEM_AIRSTRIKE)
       this.app.set('placing', id);
     if (id == ID_ITEM_FLARE) {
       const timers = this.get("app.timers");
@@ -415,7 +713,7 @@ const App = kind({
       classes: "sidebar sidesidebar",
       bindings: [
         /* referencing these directly in the computed property doesn't work, so we copy them in and never use them */
-        { from: "app.game_over",         to: "game_over" },
+        { from: "app.modal", to: "game_over", transform: modal => modal == MODAL_LOST },
         { from: "app.vendor_stay_ticks", to: "vendor_stay_ticks" },
 
         { from: "app.vendoring", to: "vendoring" },
@@ -430,7 +728,7 @@ const App = kind({
           if (!this.get("app.vendoring")) styles += "height: fit-content; ";
           if ( this.get("app.placing")  ) styles += "filter: opacity(30%); pointer-events: none; ";
 
-          const showing = !this.app.get("game_over") && (this.app.get("vendor_stay_ticks") > 0);
+          const showing = !this.get("game_over") && (this.app.get("vendor_stay_ticks") > 0);
           if (!showing) styles += "display: none;";
         }
         this.set("style", styles);
@@ -529,6 +827,9 @@ const App = kind({
                     ret.push({ cost: 40, count: 50, id: ID_ITEM_SCREW     });
                     ret.push({ cost: 40, count:  3, id: ID_ITEM_AIRSTRIKE });
                   }
+
+                  if (sim.level == 1)
+                    ret.push({ cost: 20, count: 1, id: ID_ITEM_PICK });
 
                   return {
                     inventory: ret,
@@ -657,7 +958,7 @@ const App = kind({
       bindings: [
         { from: "app.placing", to: "style",
           transform: id => (id == ID_NONE) ? '' : "filter: opacity(30%); pointer-events: none;" },
-        { from: "app.game_over", to: "showing", transform: over => !over }
+        { from: "app.modal", to: "showing", transform: modal => modal == MODAL_NONE }
       ],
       components: [
         {
@@ -680,8 +981,8 @@ const App = kind({
               classes: "item-box-div",
               components: [ { kind: InvItemBox } ],
               collection: [
-                ID_ITEM_WOOD     , ID_ITEM_SCREW    , ID_ITEM_AXE      , ID_ITEM_FLARE    ,
-                ID_ITEM_AIRSTRIKE, ID_ITEM_PC       , ID_NONE          , ID_NONE          ,
+                ID_ITEM_WOOD     , ID_ITEM_SCREW    , ID_ITEM_AXE      , ID_ITEM_PICK     ,
+                ID_ITEM_FLARE    , ID_ITEM_AIRSTRIKE, ID_ITEM_PC       , ID_ITEM_BOOK     ,
               /* if you don't wrap them in objects, ID_NONE gets filtered out (because falsey?) */
               ].map(id => ({ id })),
             }
@@ -692,13 +993,117 @@ const App = kind({
       ],
     },
     {
-      style: "position: absolute; top: 0em; left: 0.5em; pointer-events: none;",
-      bindings: [ { from: "app.game_over", to: "showing" } ],
+      classes: "modal-parent",
+      bindings: [
+        { from: "app.modal", to: "style", transform: modal => (modal == MODAL_NONE) ? "pointer-events: none;" : "" }
+      ],
       components: [
         {
-          classes: "section-header",
-          style: "color: black;",
-          content: "game over",
+          classes: "modal-box",
+          bindings: [
+            { from: "app.modal", to: "showing", transform: modal => modal != MODAL_NONE }
+          ],
+          components: [
+            {
+              bindings: [ { from: "app.modal", to: "showing", transform: modal => modal == MODAL_WON } ],
+              classes: "modal-content",
+              components: [
+                { classes: "section-header", content: "level complete" },
+                { style: "width: 100%; border: 1px solid snow;", tag: "hr" },
+                { tag: "br" },
+                { classes: "recipe-buy-button modal-button",
+                  components: [
+                    { content: "NEXT LEVEL" },
+                    { tag: "img", classes: "modal-button-img", attributes: { src: "assets/vendor.svg" } },
+                    { classes: 'modal-button-tooltip', tag: 'span', content: "again, with a new twist!" },
+                  ],
+                  handlers: { ontap: 'on_tap' },
+                  on_tap() {
+                    /* increment level, reset inventory and map (to next level starter) */
+                    const sim = sim_empty();
+                    sim_set_tutbuild(sim);
+                    sim.level = 1;
+                    for (let i = 0; i < 15; i++) {
+                      const t = i/15;
+                      const CIRCLE = 0.525;
+                      const SQUARE = 0.470;
+                      const ret = {
+                        x: Math.cos(t*Math.PI*2)*CIRCLE,
+                        y: Math.sin(t*Math.PI*2)*CIRCLE,
+                        tier: 1,
+                        rot: Math.random() * Math.PI*2,
+                        seed: Math.random()
+                      };
+                      if (Math.abs(ret.x) > SQUARE) ret.x = SQUARE*Math.sign(ret.x);
+                      if (Math.abs(ret.y) > SQUARE) ret.y = SQUARE*Math.sign(ret.y);
+                      sim.trees.push(ret);
+                    }
+                    sim_spawn_trees(sim, 30);
+                    sim_calc_nav_nodes(sim);
+                    this.app.set("sim", sim);
+                    this.app.set("inv", inv_start(1));
+                    this.app.set("timers", timers_start());
+                    this.app.set("vendors_seen", 0);
+                    this.app.set("vendor_stay_ticks", 0);
+                    this.app.set("money", 10);
+                    this.app.set("modal", MODAL_NONE);
+                  }
+                },
+              ]
+            },
+            {
+              bindings: [ { from: "app.modal", to: "showing", transform: modal => modal == MODAL_LOST } ],
+              classes: "modal-content",
+              components: [
+                { classes: "section-header", content: "game over" },
+                { style: "width: 100%; border: 1px solid snow;", tag: "hr" },
+                { tag: "br" },
+                {
+                  classes: "recipe-buy-button modal-button",
+                  components: [
+                    { content: "RESTART" },
+                    { tag: "img", classes: "modal-button-img", attributes: { src: "assets/wave.svg" } },
+                    { classes: 'modal-button-tooltip', tag: 'span', content: "start over with a small building and a couple items" },
+                  ],
+                  handlers: { ontap: 'on_tap' },
+                  on_tap() {
+                    /* reset inventory and map (to starter) */
+                    const sim = sim_empty();
+                    sim_set_tutbuild(sim);
+                    sim_spawn_trees(sim, 50);
+                    sim_calc_nav_nodes(sim);
+                    this.app.set("sim", sim);
+                    this.app.set("inv", inv_start());
+                    this.app.set("timers", timers_start());
+                    this.app.set("vendors_seen", 0);
+                    this.app.set("vendor_stay_ticks", 0);
+                    this.app.set("money", 10);
+                    this.app.set("modal", MODAL_NONE);
+                  }
+                },
+                { classes: "recipe-buy-button modal-button",
+                  components: [
+                    { content: "CLEAR CUT" },
+                    { tag: "img", classes: "modal-button-img", attributes: { src: "assets/axe.svg" } },
+                    { classes: 'modal-button-tooltip', tag: 'span', content: "bring your current inventory to a reset, buildingless map" },
+                  ],
+                  handlers: { ontap: 'on_tap' },
+                  on_tap() {
+                    /* reset map (to blank) */
+                    const sim = sim_empty();
+                    sim_spawn_trees(sim, 50);
+                    sim_calc_nav_nodes(sim);
+                    this.app.set("sim", sim);
+                    this.app.set("timers", timers_start());
+                    this.app.set("vendors_seen", 0);
+                    this.app.set("vendor_stay_ticks", 0);
+                    this.app.set("money", 10);
+                    this.app.set("modal", MODAL_NONE);
+                  }
+                }
+              ]
+            }
+          ]
         },
       ]
     },
@@ -739,31 +1144,23 @@ ready(function() {
     vendor_data: { name: "null", desc: "void", inventory: [] },
     vendors_seen: 0,
     vendor_stay_ticks: 0,
-    game_over: false,
-    hp: 9,
-    timers: [
-      { time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" },
-      { time: 1, ticks:  5*TPS, text: "vendor", icon: "vendor" },
-      // { time: "1:35", text: "enemies",  icon: "wave",   },
-      // { time: "0:40", text: "vendor",   icon: "vendor", },
-      // { time: "0:01", text: "axe done", icon: "axe",    }
-    ],
+    modal: MODAL_NONE,
     money: 10,
-    inv: new Model({
-      [ID_ITEM_WOOD     ]: 15,
-      [ID_ITEM_SCREW    ]:  5,
-      [ID_ITEM_AXE      ]:  2,
-      [ID_ITEM_FLARE    ]:  1,
-      [ID_ITEM_AIRSTRIKE]:  1,
-      [ID_ITEM_PC       ]:  1,
-      [ID_ITEM_BOOK     ]:  0,
-      [ID_NONE          ]:  0,
-    }),
+    inv: inv_start(),
+    timers: timers_start(),
+    sim: (() => {
+      const sim = sim_empty();
+      sim_set_tutbuild(sim);
+      sim_spawn_trees(sim, 50);
+      sim_calc_nav_nodes(sim);
+      return sim;
+    })(),
     view: App
   });
 
   app.renderInto(document.body);
-  app.inv.set(ID_ITEM_PC, 0);
+  // app.inv.set(ID_ITEM_PC, app.inv.get(ID_ITEM_PC)+1);
+  // app.inv.set(ID_ITEM_PC, app.inv.get(ID_ITEM_PC)-1);
 
   const canvas = document.getElementsByTagName("canvas")[0];
   const ctx = canvas.getContext("2d");
@@ -773,8 +1170,10 @@ ready(function() {
   })();
 
   /* canvas assets */
-  const axe = new Image();
-  axe.src = `assets/${id_to_slug[ID_ITEM_AXE]}.svg`;
+  const axe_img = new Image();
+  axe_img.src = `assets/${id_to_slug[ID_ITEM_AXE]}.svg`;
+  const pick_img = new Image();
+  pick_img.src = `assets/${id_to_slug[ID_ITEM_PICK]}.svg`;
 
   let mouse_x = 0;
   let mouse_y = 0;
@@ -784,228 +1183,25 @@ ready(function() {
       app.set('placing', ID_NONE);
   }
   canvas.onmousedown = () => mouse_down = 1;
-  canvas.onmouseup   = () => mouse_down = 0;
+  window.onmouseup   = () => mouse_down = 0;
   window.onmousemove = ev => {
     mouse_x = ev.pageX;
     mouse_y = ev.pageY;
   };
 
-  const PORTAL_X = 0;
-  const PORTAL_Y = 0;
-  const trees = [];
-  const tick_timeouts = []; /* TODO: make serializable */
-  const traps = [
-    { x:  0.0836, y:  0.0836, kind: ID_TRAP_WALL },
-    { x: -0.0029, y: -0.2118, kind: ID_TRAP_WALL },
-    { x: -0.2046, y: -0.0303, kind: ID_TRAP_WALL },
-    { x: -0.0476, y: -0.0504, kind: ID_TRAP_WALL },
-    { x: -0.0951, y:  0.0360, kind: ID_TRAP_WALL }
-    // { x: -0.30, y: -0.20, rot: Math.PI/2, ticks: 0, kind: ID_TRAP_PISTON }
-  ];
-  const enemies = [];
-  const axes = [];
-  const projectiles = [];
-  const $ = i => ({ x: traps[i].x, y: traps[i].y });
-  const walls = [{ from: $(0), to: $(1) },
-                 { from: $(4), to: $(2) },
-                 { from: $(4), to: $(0) },
-                 { from: $(4), to: $(3) },];
-  function walls_stuck_out(stick_out) {
-    const ret = JSON.parse(JSON.stringify(walls));
-    for (const i in ret) {
-      const src = walls[i];
-      const dst = ret[i];
-      const len = point_to_point(dst.from.x, dst.from.y,
-                                 dst.  to.x, dst.  to.y);
-      const t = 1 + stick_out/len;
-      dst.from.x = lerp(src.  to.x, src.from.x, t);
-      dst.from.y = lerp(src.  to.y, src.from.y, t);
-      dst.  to.x = lerp(src.from.x, src.  to.x, t);
-      dst.  to.y = lerp(src.from.y, src.  to.y, t);
-    }
-    return ret;
-  }
-
-  let _i = 0;
-  while (trees.length < 50 && _i < 1e7) {
-    _i++;
-    let ret = {
-      x: lerp(-0.5, 0.5, Math.random()),
-      y: lerp(-0.5, 0.5, Math.random()),
-      rot: Math.random() * Math.PI*2,
-      seed: Math.random()
-    };
-
-    /* brute force the constraints; very monte carlo */
-    for (const { x, y } of trees) {
-      if (point_to_point(x, y, ret.x, ret.y) < 0.10) {
-        ret = undefined;
-        break;
-      }
-    }
-    if (ret == undefined) continue;
-
-    if (point_to_point(PORTAL_X, PORTAL_Y, ret.x, ret.y) < 0.10)
-      continue;
-
-    for (const { from, to } of walls) {
-      if (point_to_line(from, to, ret.x, ret.y) < 0.06) {
-        ret = undefined;
-        break;
-      }
-    }
-    if (ret == undefined) continue;
-
-    trees.push(ret);
-  }
-
   function find_path(start_x, start_y, end_x, end_y, ctx) {
-    const POI_WALL_OUT    = 0.020; /* how far walls for POI generation are stuck out */
-    const NODE_PAD        = 0.045; /* how far out control nodes are placed from POIs */
-    const REGION_MAX      = 0.105*Math.PI*2; /* radians around POI per control node */
-    const NODE_WALL_OUT   = 0.001; /* how far walls for node-in-wall prefilter are stuck out */
-    const NODE_WALL_THICK = 0.038; /* how thick are walls for node-in-wall prefilter */
-    const COMBINE_DIST    = 0.025; /* how close together nodes need to be to be joined */
-    const WALL_THICK      = 0.038; /* proximity to post/wall beneath which a visibility path gets filtered out */
-    const VIS_WALL_OUT    = 0.005; /* how far walls for visibility checks are stuck out */
+    const sim = app.sim;
+    sim.tired = true;
 
-    const pois = new Map();
-    let control_nodes = [];
-    const key = pt => Math.floor(pt.x * 1000) + ',' + Math.floor(pt.y * 1000);
-
-    for (const { from, to } of walls.concat(walls_stuck_out(POI_WALL_OUT))) {
-      const from_key = key(from);
-      const   to_key = key(  to);
-      if (!pois.has(from_key)) pois.set(from_key, { pt: from, connects: [] });
-      if (!pois.has(  to_key)) pois.set(  to_key, { pt:   to, connects: [] });
-
-      pois.get(from_key).connects.push(  to);
-      pois.get(  to_key).connects.push(from);
-    }
-    for (let poi of pois.values()) {
-      let { pt, connects } = poi;
-      const node_regions = connects.map(ct => {
-        const delta_x = ct.x - pt.x;
-        const delta_y = ct.y - pt.y;
-        const atan2 = Math.atan2(delta_y, delta_x);
-        if (atan2 < 0) return Math.PI*2 + atan2;
-        return atan2;
-      });
-      node_regions.sort((a, b) => a - b);
-
-      const split_regions = [];
-      // const artificial_regions = new Set();
-      for (let i = 0; i < node_regions.length; i++) {
-        let rad = node_regions[i];
-        let next = node_regions[i+1];
-        if (next == undefined) next = Math.PI*2 + node_regions[0];
-
-        split_regions.push(rad);
-        const delta = (next - rad);
-        if (delta > REGION_MAX) {
-          const new_regions = Math.ceil(delta/REGION_MAX); /* one more than actual new region count */
-          for (let i = 1; i < new_regions; i++) {
-            const artificial = lerp(rad, next, i/new_regions);
-            // artificial_regions.add(artificial);
-            split_regions.push(artificial);
-          }
-        }
-      }
-
-      if (DEBUG_VIS && ctx && 0) for (const theta of split_regions) {
-        const dist = 0.07;
-        // const theta = theta;
-        const node_x = pt.x + Math.cos(theta) * dist;
-        const node_y = pt.y + Math.sin(theta) * dist;
-        ctx.beginPath();
-        ctx.moveTo(pt.x, pt.y);
-        ctx.lineTo(node_x, node_y);
-        ctx.lineWidth = 0.005;
-        ctx.globalAlpha = 0.5;
-        ctx.strokeStyle = "magenta";
-        ctx.stroke();
-      }
-
-      /* write into control_nodes */
-      for (let i = 0; i < split_regions.length; i++) {
-        let this_rad = split_regions[i];
-        let next_rad = split_regions[i+1];
-        if (next_rad == undefined) next_rad = Math.PI*2 + split_regions[0];
-
-        const theta = (this_rad + next_rad)/2;
-        let cornerness = inv_lerp(Math.PI*2*0.16, 0, next_rad - this_rad);
-        cornerness = Math.max(0, cornerness, Math.min(1, cornerness));
-        const dist = NODE_PAD * lerp(0.5, 2, cornerness);
-        const node_x = pt.x + Math.cos(theta) * dist;
-        const node_y = pt.y + Math.sin(theta) * dist;
-
-        control_nodes.push({ x: node_x, y: node_y, connects: [] });
-        if (DEBUG_VIS && ctx && 0) {
-          ctx.beginPath();
-          ctx.globalAlpha = lerp(0.2, 1, cornerness);
-          const size = 0.07;
-          ctx.arc(node_x, node_y, size*0.2, 0, Math.PI*2);
-          ctx.fillStyle = "pink";
-          ctx.fill();
-        }
-      }
-    }
-
-    /* filter out nodes that are inside of walls */
-    const node_walls = walls_stuck_out(NODE_WALL_OUT);
-    control_nodes = control_nodes.filter(n => {
-      for (const { from: l, to: r } of node_walls) {
-        const dist = point_to_line(l, r, n.x, n.y);
-        if (dist < NODE_WALL_THICK)
-          return false;
-      }
-
-      return true;
-    });
-
-    /* combine close together nodes */
-    while (true) {
-      let closest_pair;
-      let closest_dist = COMBINE_DIST;
-      for (const o of control_nodes)
-        for (const p of control_nodes) {
-          if (o == p) continue;
-
-          const dist = point_to_point(o.x, o.y, p.x, p.y);
-          if (dist < closest_dist) {
-            closest_pair = [o, p];
-            closest_dist = dist;
-          }
-        }
-      if (closest_pair) {
-        const [o, p] = closest_pair;
-        control_nodes.splice(control_nodes.indexOf(o), 1);
-        control_nodes.splice(control_nodes.indexOf(p), 1);
-        control_nodes.push({
-          x: lerp(o.x, p.x, 0.5),
-          y: lerp(o.y, p.y, 0.5),
-          connects: []
-        });
-      }
-      else
-        break;
-    }
-
-    if (DEBUG_VIS && ctx) for (const { x: node_x, y: node_y } of control_nodes) {
-      const size = 0.07;
-      ctx.beginPath();
-      ctx.globalAlpha = 0.2;
-      ctx.arc(node_x, node_y, size*0.2, 0, Math.PI*2);
-      ctx.fillStyle = "magenta";
-      ctx.fill();
-    }
+    if (app.sim.nav_nodes == undefined) sim_calc_nav_nodes(app.sim);
+    const control_nodes = [...app.sim.nav_nodes];
 
     let start, end;
     control_nodes.push(start = { x: start_x, y: start_y, connects: [] });
     control_nodes.push(  end = { x:   end_x, y:   end_y, connects: [] });
 
     const pairs = [];
-    const vis_walls = walls_stuck_out(VIS_WALL_OUT);
+    const vis_walls = walls_stuck_out(sim, PFO.VIS_WALL_OUT);
     for (const from of control_nodes)
       for (const to of control_nodes) {
         if (from == to) continue;
@@ -1022,7 +1218,7 @@ ready(function() {
         let hit = false;
         for (const { from: l, to: r } of vis_walls) {
           const dist = line_to_line(l, r, from, to);
-          if (dist < WALL_THICK) {
+          if (dist < PFO.WALL_THICK) {
             push = false;
             hit = true;
             break;
@@ -1097,6 +1293,13 @@ ready(function() {
 
   let screen_to_world;
   function tick() {
+    const {
+      trees, tick_timeouts, traps,
+      enemies, axes, projectiles,
+      walls
+    } = app.sim;
+    const sim = app.sim;
+
     // if (screen_to_world) {
     //   let mouse = new DOMPoint(mouse_x, mouse_y, 0, 1).matrixTransform(screen_to_world);
     // }
@@ -1148,7 +1351,7 @@ ready(function() {
           (function enemy() {
             const spawn_point = trees[Math.floor(Math.random()*trees.length)]
             if (spawn_point == undefined) {
-              alert("well done, you beat the game!");
+              app.set("modal", MODAL_WON);
               return;
             }
 
@@ -1159,11 +1362,23 @@ ready(function() {
             const { x, y } = spawn_point;
 
             let hp = 1;
-                 if (window.wave_size > 20) hp += Math.floor(Math.random() * 1.3),
-                                            hp += Math.floor(Math.random() * 1.3);
-            else if (window.wave_size > 15) hp += Math.floor(Math.random() * 1.2),
-                                            hp += Math.floor(Math.random() * 1.2);
-            else if (window.wave_size > 10) hp += Math.floor(Math.random() * 1.2);
+            if (sim.level == 0) {
+                   if (window.wave_size > 20) hp += Math.floor(Math.random() * 1.3),
+                                              hp += Math.floor(Math.random() * 1.3);
+              else if (window.wave_size > 15) hp += Math.floor(Math.random() * 1.2),
+                                              hp += Math.floor(Math.random() * 1.2);
+              else if (window.wave_size > 10) hp += Math.floor(Math.random() * 1.2);
+            }
+            if (sim.level == 1) {
+                   if (window.wave_size > 20) hp += Math.floor(Math.random() * 1.9),
+                                              hp += Math.floor(Math.random() * 1.9),
+                                              hp += Math.floor(Math.random() * 1.5);
+              else if (window.wave_size > 15) hp += Math.floor(Math.random() * 1.7),
+                                              hp += Math.floor(Math.random() * 1.7);
+              else if (window.wave_size > 10) hp += Math.floor(Math.random() * 1.6),
+                                              hp += Math.floor(Math.random() * 1.5);
+              else if (window.wave_size >  5) hp += Math.floor(Math.random() * 1.5);
+            }
             enemies.push({ x, y, ticks: 0, hp, max_hp: hp });
           })();
 
@@ -1191,7 +1406,7 @@ ready(function() {
 
     const kill_p = p => cleanups.push(() => projectiles.splice(projectiles.indexOf(p), 1));
     const kill_e = e => cleanups.push(() => enemies    .splice(enemies    .indexOf(e), 1));
-    const _walls = walls_stuck_out(0.04);
+    const _walls = walls_stuck_out(sim, 0.04);
     for (const p of projectiles) {
 
       p.ticks++;
@@ -1225,17 +1440,13 @@ ready(function() {
       p.y = next_p.y;
     }
 
-    let calced_path = false;
     for (const e of enemies) {
       e.ticks++;
       const UNITS_PER_TICK = 0.001;
 
       if (e.path == undefined) {
-        if (!calced_path) {
-          calced_path = true;
-          console.log("calced path");
+        if (!sim.tired)
           e.path = find_path(e.x, e.y, PORTAL_X, PORTAL_Y);
-        }
         else
           continue;
       }
@@ -1261,10 +1472,10 @@ ready(function() {
 
       /* HONEY I'M HOOOOOME */
       if (e.path.length == 0) {
-        app.set("hp", app.get("hp") - 1);
-        if (app.get("hp") == 0)
+        app.sim.hp--;
+        if (app.sim.hp == 0)
           app.set("placing", ID_NONE),
-          app.set("game_over", true);
+          app.set("modal", MODAL_LOST);
         kill_e(e);
         continue;
       }
@@ -1279,7 +1490,7 @@ ready(function() {
     }
 
     for (const a of axes) {
-      const UNITS_PER_TICK = 0.002;
+      const UNITS_PER_TICK = 0.0012;
 
       if (a.tree.being_chopped || trees.indexOf(a.tree) == -1)
         cleanups.push(a => {
@@ -1291,7 +1502,10 @@ ready(function() {
         });
 
       if (a.path == undefined) {
-        a.path = find_path(a.x, a.y, a.tree.x, a.tree.y);
+        if (!sim.tired)
+          a.path = find_path(a.x, a.y, a.tree.x, a.tree.y);
+        else
+          continue;
       }
 
       if (a.path.length == 0) continue;
@@ -1309,11 +1523,12 @@ ready(function() {
       /* HONEY I'M HOOOOOME */
       if (a.path.length == 0) {
         cleanups.push(() => {
-          const ticks = 5*TPS;
+          const ticks = Math.floor([5*TPS, 20*TPS][a.tier]);
+          const name = ["axe", "pick"][a.tier];
           axes.splice(axes.indexOf(a), 1);
           app.timers.push({
             time: 1, ticks,
-            text: "axe done", icon: "axe",
+            text: name + " done", icon: name,
           });
           a.tree.being_chopped = 1;
           tick_timeouts.push({
@@ -1404,12 +1619,19 @@ ready(function() {
 
     const TICK_MS = 1000/TPS;
     dt = Math.min(dt, TICK_MS*10);
-    if (!app.get("vendoring") && !app.get("game_over"))
+    if (!app.get("vendoring") && (app.get("modal") == MODAL_NONE))
       tick_acc += dt;
     while (tick_acc > TICK_MS) {
       tick_acc -= TICK_MS;
       tick();
     }
+
+    const {
+      trees, tick_timeouts, traps,
+      enemies, axes, projectiles,
+      walls
+    } = app.sim;
+    const sim = app.sim;
 
     ctx.save();
 
@@ -1441,8 +1663,8 @@ ready(function() {
       ctx.fillRect(x + size/-2, y + size/-2, size, size);
     }
 
-    function axe_chopping(x, y, rot, size=0.05) {
-      if (!axe.complete) return;
+    function axe_chopping(tier, x, y, rot, size=0.05) {
+      if (!axe_img.complete) return;
 
       ctx.save();
       ctx.translate(x, y);
@@ -1450,17 +1672,17 @@ ready(function() {
       ctx.translate(-size*0.8, -size*0.8);
 
       const swing = 1 + 0.6*(1 - Math.abs(Math.sin(0.005*now)));
-      ctx.rotate(Math.PI/2 - swing*Math.PI);
-      ctx.drawImage(axe, -size*0.8, -size*0.8, size, size);
+      ctx.rotate(Math.PI*0.6 - swing*Math.PI);
+      ctx.drawImage([axe_img, pick_img][tier], -size*0.8, -size*0.8, size, size);
       ctx.restore();
     }
-    function axe_icon(x, y, size, opacity) {
-      if (!axe.complete) return;
+    function axe_icon(tier, x, y, size, opacity) {
+      if (!axe_img.complete) return;
 
       ctx.globalAlpha = opacity;
       ctx.save();
       ctx.translate(x - size/4, y - size/4);
-      ctx.drawImage(axe, size/-4, size/-4, size, size);
+      ctx.drawImage([axe_img, pick_img][tier], size/-4, size/-4, size, size);
       ctx.restore();
       ctx.globalAlpha = 1;
     }
@@ -1475,10 +1697,11 @@ ready(function() {
       const { x, y, rot, seed } = tree;
       const size = 0.04;
 
-      if (tree.being_chopped) axe_chopping(x, y, rot);
+      if (tree.being_chopped) axe_chopping(tree.tier, x, y, rot);
 
       for (let i = 0; i < 2; i++) {
-        ctx.fillStyle = i ? "#609f6d" : "#54895f" ;
+        if (tree.tier == 0) ctx.fillStyle = i ? "#609f6d" : "#54895f";
+        if (tree.tier == 1) ctx.fillStyle = i ? "#6575a6" : "#57658f";
 
         ctx.save();
         ctx.translate(x, y);
@@ -1486,13 +1709,17 @@ ready(function() {
         ctx.fillRect(size/-2, size/-2, size, size);
         ctx.restore();
       }
-      if (app.placing == ID_ITEM_AXE && !tree.being_chopped && !axes.some(a => a.tree == tree)) {
+      let placing_tier = -1;
+      if (app.placing == ID_ITEM_AXE ) placing_tier = 0;
+      if (app.placing == ID_ITEM_PICK) placing_tier = 1;
+
+      if (placing_tier == tree.tier && !tree.being_chopped && !axes.some(a => a.tree == tree)) {
         const hover = (closest.t == tree);
 
-        axe_icon(x, y, size, hover ? lerp(0.5, 1.0, 1-closest.dist/0.1) : 0.3);
+        axe_icon(tree.tier, x, y, size, hover ? lerp(0.5, 1.0, 1-closest.dist/0.1) : 0.3);
 
         if (mouse_down && hover) {
-          axes.push({ x: PORTAL_X, y: PORTAL_Y, tree });
+          axes.push({ x: PORTAL_X, y: PORTAL_Y, tier: tree.tier, tree });
 
           const key = ID_ITEM_AXE;
           const inv = app.inv;
@@ -1538,7 +1765,7 @@ ready(function() {
       let hp = 0;
       for (let i = 0; i <= 2; i++)
         for (let j = 0; j <= 2; j++) {
-          if (hp >= app.get("hp")) continue;
+          if (hp >= app.sim.hp) continue;
           hp++;
 
           ctx.fillStyle = "#4c4777";
@@ -1550,8 +1777,8 @@ ready(function() {
         }
     }
 
-    for (const { x, y } of axes) {
-      axe_icon(x, y + 0.02*(1 - Math.abs(Math.sin(0.008*now))), 0.03, 1);
+    for (const { x, y, tier } of axes) {
+      axe_icon(tier, x, y + 0.02*(1 - Math.abs(Math.sin(0.008*now))), 0.03, 1);
     }
 
     for (const { x, y, rot } of projectiles) {
@@ -1604,7 +1831,7 @@ ready(function() {
       ctx.stroke();
     }
 
-    const _walls = walls_stuck_out(0.03);
+    const _walls = walls_stuck_out(sim, 0.03);
     for (const { from, to } of _walls)
       draw_wall(from, to);
 
@@ -1618,12 +1845,12 @@ ready(function() {
       const x = lerp(from.x, to.x, 0.5);
       const y = lerp(from.y, to.y, 0.5);
 
-      if (wall.being_chopped) axe_chopping(x, y, Math.PI/2 - Math.atan2(from.y - to.y, from.x - to.x));
+      if (wall.being_chopped) axe_chopping(0, x, y, Math.PI/2 - Math.atan2(from.y - to.y, from.x - to.x));
 
       if (app.placing == ID_ITEM_AXE && !wall.being_chopped) {
         const hover = (closest.w == wall);
 
-        axe_icon(x, y, 0.05, hover ? lerp(0.5, 1.0, 1-closest.dist/0.1) : 0.3);
+        axe_icon(0, x, y, 0.05, hover ? lerp(0.5, 1.0, 1-closest.dist/0.1) : 0.3);
 
         if (mouse_down && hover) {
           const ticks = 5*TPS;
@@ -1635,6 +1862,7 @@ ready(function() {
           tick_timeouts.push({
             fn: () => {
               for (const e of enemies) e.path = undefined;
+              sim_calc_nav_nodes(app.sim);
               walls.splice(walls.indexOf(wall), 1);
             },
             ticks
@@ -1679,7 +1907,7 @@ ready(function() {
         /* (not-quite) quadratic perf goes weee */
         const pairs = [];
         const key = pt => Math.floor(pt.x * 1000) + ',' + Math.floor(pt.y * 1000);
-        const in_walls = walls_stuck_out(-0.025*1.5);
+        const in_walls = walls_stuck_out(sim, -0.025*1.5);
         for (const from of posts) {
           const from_key = key(from);
           for (const to of posts) {
@@ -1738,6 +1966,7 @@ ready(function() {
           if (mouse_down) {
             walls.push({ from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y } });
             for (const e of enemies) e.path = undefined;
+            sim_calc_nav_nodes(app.sim);
             finish_place();
           }
           return;
@@ -1824,6 +2053,7 @@ ready(function() {
 
     if (0) find_path(mouse.x, mouse.y, PORTAL_X, PORTAL_Y, ctx);
 
+    sim.tired = false;
     ctx.restore();
   });
 
