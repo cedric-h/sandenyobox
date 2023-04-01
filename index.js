@@ -194,96 +194,6 @@ const trap_to_recipe = {
 const PORTAL_X = 0;
 const PORTAL_Y = 0;
 
-function sim_empty() {
-  return {
-    hp: 9,
-    /* blunt tool used to prevent too many expensive calculations from happening on the same frame */
-    tired: false,
-    level: 0,
-    axes: [],
-    traps: [],
-    walls: [],
-    trees: [],
-    enemies: [],
-    projectiles: [],
-    tick_timeouts: [], /* TODO: make serializable */
-  };
-}
-function inv_start(level = 0) {
-  if (level == 0)
-    return new Model({
-      [ID_ITEM_WOOD     ]: 15,
-      [ID_ITEM_SCREW    ]:  5,
-      [ID_ITEM_AXE      ]:  2,
-      [ID_ITEM_PICK     ]:  0,
-      [ID_ITEM_FLARE    ]:  1,
-      [ID_ITEM_AIRSTRIKE]:  1,
-      [ID_ITEM_PC       ]:  0,
-      [ID_ITEM_BOOK     ]:  0,
-      [ID_NONE          ]:  0,
-    });
-  if (level == 1)
-    return new Model({
-      [ID_ITEM_WOOD     ]: 30,
-      [ID_ITEM_SCREW    ]: 15,
-      [ID_ITEM_AXE      ]:  2,
-      [ID_ITEM_PICK     ]:  0,
-      [ID_ITEM_FLARE    ]:  1,
-      [ID_ITEM_AIRSTRIKE]:  1,
-      [ID_ITEM_PC       ]:  0,
-      [ID_ITEM_BOOK     ]:  0,
-      [ID_NONE          ]:  0,
-    });
-}
-
-function timers_start() {
-  return [
-    { time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" },
-    { time: 1, ticks:  5*TPS, text: "vendor", icon: "vendor" },
-    // { time: "1:35", text: "enemies",  icon: "wave",   },
-    // { time: "0:40", text: "vendor",   icon: "vendor", },
-    // { time: "0:01", text: "axe done", icon: "axe",    }
-  ];
-}
-
-function sim_spawn_trees(sim, tree_count) {
-  const { walls, trees } = sim;
-
-  let _i = 0;
-  while (trees.length < tree_count && _i < 1e7) {
-    _i++;
-    let ret = {
-      x: lerp(-0.5, 0.5, Math.random()),
-      y: lerp(-0.5, 0.5, Math.random()),
-      tier: 0,
-      rot: Math.random() * Math.PI*2,
-      seed: Math.random()
-    };
-
-    /* brute force the constraints; very monte carlo */
-    for (const { x, y } of trees) {
-      if (point_to_point(x, y, ret.x, ret.y) < 0.10) {
-        ret = undefined;
-        break;
-      }
-    }
-    if (ret == undefined) continue;
-
-    if (point_to_point(PORTAL_X, PORTAL_Y, ret.x, ret.y) < 0.10)
-      continue;
-
-    for (const { from, to } of walls) {
-      if (point_to_line(from, to, ret.x, ret.y) < 0.06) {
-        ret = undefined;
-        break;
-      }
-    }
-    if (ret == undefined) continue;
-
-    trees.push(ret);
-  }
-}
-
 function walls_stuck_out(sim, stick_out) {
   const { walls } = sim;
 
@@ -828,7 +738,7 @@ const App = kind({
                     ret.push({ cost: 40, count:  3, id: ID_ITEM_AIRSTRIKE });
                   }
 
-                  if (sim.level == 1)
+                  if (this.app.get("level") == 2)
                     ret.push({ cost: 20, count: 1, id: ID_ITEM_PICK });
 
                   return {
@@ -1019,34 +929,8 @@ const App = kind({
                   ],
                   handlers: { ontap: 'on_tap' },
                   on_tap() {
-                    /* increment level, reset inventory and map (to next level starter) */
-                    const sim = sim_empty();
-                    sim_set_tutbuild(sim);
-                    sim.level = 1;
-                    for (let i = 0; i < 15; i++) {
-                      const t = i/15;
-                      const CIRCLE = 0.525;
-                      const SQUARE = 0.470;
-                      const ret = {
-                        x: Math.cos(t*Math.PI*2)*CIRCLE,
-                        y: Math.sin(t*Math.PI*2)*CIRCLE,
-                        tier: 1,
-                        rot: Math.random() * Math.PI*2,
-                        seed: Math.random()
-                      };
-                      if (Math.abs(ret.x) > SQUARE) ret.x = SQUARE*Math.sign(ret.x);
-                      if (Math.abs(ret.y) > SQUARE) ret.y = SQUARE*Math.sign(ret.y);
-                      sim.trees.push(ret);
-                    }
-                    sim_spawn_trees(sim, 30);
-                    sim_calc_nav_nodes(sim);
-                    this.app.set("sim", sim);
-                    this.app.set("inv", inv_start(1));
-                    this.app.set("timers", timers_start());
-                    this.app.set("vendors_seen", 0);
-                    this.app.set("vendor_stay_ticks", 0);
-                    this.app.set("money", 10);
-                    this.app.set("modal", MODAL_NONE);
+                    this.app.set("level", 1+this.app.get("level"));
+                    app_init_level(this.app, this.app.get("level"));
                   }
                 },
               ]
@@ -1067,18 +951,7 @@ const App = kind({
                   ],
                   handlers: { ontap: 'on_tap' },
                   on_tap() {
-                    /* reset inventory and map (to starter) */
-                    const sim = sim_empty();
-                    sim_set_tutbuild(sim);
-                    sim_spawn_trees(sim, 50);
-                    sim_calc_nav_nodes(sim);
-                    this.app.set("sim", sim);
-                    this.app.set("inv", inv_start());
-                    this.app.set("timers", timers_start());
-                    this.app.set("vendors_seen", 0);
-                    this.app.set("vendor_stay_ticks", 0);
-                    this.app.set("money", 10);
-                    this.app.set("modal", MODAL_NONE);
+                    app_init_level(this.app, this.app.get("level"));
                   }
                 },
                 { classes: "recipe-buy-button modal-button",
@@ -1089,16 +962,7 @@ const App = kind({
                   ],
                   handlers: { ontap: 'on_tap' },
                   on_tap() {
-                    /* reset map (to blank) */
-                    const sim = sim_empty();
-                    sim_spawn_trees(sim, 50);
-                    sim_calc_nav_nodes(sim);
-                    this.app.set("sim", sim);
-                    this.app.set("timers", timers_start());
-                    this.app.set("vendors_seen", 0);
-                    this.app.set("vendor_stay_ticks", 0);
-                    this.app.set("money", 10);
-                    this.app.set("modal", MODAL_NONE);
+                    app_init_level(this.app, this.app.get("level"), { clear_cut: 1 });
                   }
                 }
               ]
@@ -1137,30 +1001,149 @@ const App = kind({
   ]
 });
 
+function app_init_level(app, level, { clear_cut }={}) {
+
+  app.set("placing", ID_NONE);
+  app.set("wave_size", 4);
+  app.set("vendoring", false);
+  app.set("vendor_data", { name: "null", desc: "void", inventory: [] });
+  app.set("vendors_seen", 0);
+  app.set("vendor_stay_ticks", 0);
+  app.set("modal", MODAL_NONE);
+  if (!clear_cut) app.set("money", 10);
+  if (!clear_cut) {
+    if (level == 0)
+      app.set("inv", new Model({
+        [ID_ITEM_WOOD     ]: 15,
+        [ID_ITEM_SCREW    ]:  5,
+        [ID_ITEM_AXE      ]:  2,
+        [ID_ITEM_PICK     ]:  0,
+        [ID_ITEM_FLARE    ]:  1,
+        [ID_ITEM_AIRSTRIKE]:  1,
+        [ID_ITEM_PC       ]:  0,
+        [ID_ITEM_BOOK     ]:  0,
+        [ID_NONE          ]:  0,
+      }));
+    if (level == 1)
+      app.set("inv", new Model({
+        [ID_ITEM_WOOD     ]: 30,
+        [ID_ITEM_SCREW    ]: 15,
+        [ID_ITEM_AXE      ]:  2,
+        [ID_ITEM_PICK     ]:  0,
+        [ID_ITEM_FLARE    ]:  1,
+        [ID_ITEM_AIRSTRIKE]:  1,
+        [ID_ITEM_PC       ]:  0,
+        [ID_ITEM_BOOK     ]:  0,
+        [ID_NONE          ]:  0,
+      }));
+  }
+  app.set("timers", [
+    { time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" },
+    { time: 1, ticks:  5*TPS, text: "vendor", icon: "vendor" },
+    // { time: "1:35", text: "enemies",  icon: "wave",   },
+    // { time: "0:40", text: "vendor",   icon: "vendor", },
+    // { time: "0:01", text: "axe done", icon: "axe",    }
+  ]);
+  app.set("wave_size", 4);
+
+  const sim = {
+    hp: 1,
+    /* blunt tool used to prevent too many expensive calculations from happening on the same frame */
+    tired: false,
+    axes: [],
+    traps: [],
+    walls: [],
+    trees: [],
+    enemies: [],
+    projectiles: [],
+    tick_timeouts: [], /* TODO: make serializable */
+  };
+  if (!clear_cut) sim_set_tutbuild(sim);
+  if (level == 1)
+    sim_spawn_trees(sim, 50);
+  if (level == 2)
+    sim_spawn_stones(sim),
+    sim_spawn_trees (sim, 30);
+  sim_calc_nav_nodes(sim);
+
+  app.set("sim", sim);
+
+  function sim_spawn_stones(sim) {
+    for (let i = 0; i < 15; i++) {
+      const t = i/15;
+      const CIRCLE = 0.525;
+      const SQUARE = 0.470;
+      const ret = {
+        x: Math.cos(t*Math.PI*2)*CIRCLE,
+        y: Math.sin(t*Math.PI*2)*CIRCLE,
+        tier: 1,
+        rot: Math.random() * Math.PI*2,
+        seed: Math.random()
+      };
+      if (Math.abs(ret.x) > SQUARE) ret.x = SQUARE*Math.sign(ret.x);
+      if (Math.abs(ret.y) > SQUARE) ret.y = SQUARE*Math.sign(ret.y);
+      sim.trees.push(ret);
+    }
+  }
+
+  function sim_spawn_trees(sim, tree_count) {
+    const { walls, trees } = sim;
+
+    let _i = 0;
+    while (trees.length < tree_count && _i < 1e7) {
+      _i++;
+      let ret = {
+        x: lerp(-0.5, 0.5, Math.random()),
+        y: lerp(-0.5, 0.5, Math.random()),
+        tier: 0,
+        rot: Math.random() * Math.PI*2,
+        seed: Math.random()
+      };
+
+      /* brute force the constraints; very monte carlo */
+      for (const { x, y } of trees) {
+        if (point_to_point(x, y, ret.x, ret.y) < 0.10) {
+          ret = undefined;
+          break;
+        }
+      }
+      if (ret == undefined) continue;
+
+      if (point_to_point(PORTAL_X, PORTAL_Y, ret.x, ret.y) < 0.10)
+        continue;
+
+      for (const { from, to } of walls) {
+        if (point_to_line(from, to, ret.x, ret.y) < 0.06) {
+          ret = undefined;
+          break;
+        }
+      }
+      if (ret == undefined) continue;
+
+      trees.push(ret);
+    }
+  }
+
+}
+
 ready(function() {
-  const app = new EnyoApplication({
-    placing: ID_NONE,
-    vendoring: false,
-    vendor_data: { name: "null", desc: "void", inventory: [] },
-    vendors_seen: 0,
-    vendor_stay_ticks: 0,
-    modal: MODAL_NONE,
-    money: 10,
-    inv: inv_start(),
-    timers: timers_start(),
-    sim: (() => {
-      const sim = sim_empty();
-      sim_set_tutbuild(sim);
-      sim_spawn_trees(sim, 50);
-      sim_calc_nav_nodes(sim);
-      return sim;
-    })(),
-    view: App
-  });
+  let app;
+  {
+    /* we need the properties _before_ we initialize, so mock
+     * a lighter version of "set" to pass to the init routine
+
+     * could potentially have done this in the constructor */
+    const app_init = {};
+    app_init.set = (key, val) => app_init[key] = val;
+    app_init_level(app_init, 1);
+
+    delete app_init['set'];
+    app_init.view = App;
+    app_init.level = 1;
+    app = new EnyoApplication(app_init);
+  }
 
   app.renderInto(document.body);
-  // app.inv.set(ID_ITEM_PC, app.inv.get(ID_ITEM_PC)+1);
-  // app.inv.set(ID_ITEM_PC, app.inv.get(ID_ITEM_PC)-1);
 
   const canvas = document.getElementsByTagName("canvas")[0];
   const ctx = canvas.getContext("2d");
@@ -1179,6 +1162,9 @@ ready(function() {
   let mouse_y = 0;
   let mouse_down = 0;
   window.onkeydown = ev => {
+    if (ev.key == 'w')
+      app.set("modal", MODAL_WON);
+
     if (app.placing && ev.key == 'Escape')
       app.set('placing', ID_NONE);
   }
@@ -1341,13 +1327,11 @@ ready(function() {
 
         /* TODO: enum */
         if (t.text == "enemies") {
-          if (window.wave_size == undefined)
-            window.wave_size = 4;
-          else
-            window.wave_size++;
+          const wave_size = app.get("wave_size");
+          app.set("wave_size", wave_size+1);
 
           let enemy_count = 0;
-          console.log(`spawning wave of ${window.wave_size} enemies`);
+          console.log(`spawning wave of ${wave_size} enemies`);
           (function enemy() {
             const spawn_point = trees[Math.floor(Math.random()*trees.length)]
             if (spawn_point == undefined) {
@@ -1356,28 +1340,28 @@ ready(function() {
             }
 
             enemy_count++;
-            if (enemy_count <= window.wave_size)
+            if (enemy_count <= wave_size)
               tick_timeouts.push({ fn: enemy, ticks: Math.floor(0.8*TPS) });
 
             const { x, y } = spawn_point;
 
             let hp = 1;
-            if (sim.level == 0) {
-                   if (window.wave_size > 20) hp += Math.floor(Math.random() * 1.3),
-                                              hp += Math.floor(Math.random() * 1.3);
-              else if (window.wave_size > 15) hp += Math.floor(Math.random() * 1.2),
-                                              hp += Math.floor(Math.random() * 1.2);
-              else if (window.wave_size > 10) hp += Math.floor(Math.random() * 1.2);
+            if (app.get("level") == 1) {
+                   if (wave_size > 20) hp += Math.floor(Math.random() * 1.3),
+                                       hp += Math.floor(Math.random() * 1.3);
+              else if (wave_size > 15) hp += Math.floor(Math.random() * 1.2),
+                                       hp += Math.floor(Math.random() * 1.2);
+              else if (wave_size > 10) hp += Math.floor(Math.random() * 1.2);
             }
-            if (sim.level == 1) {
-                   if (window.wave_size > 20) hp += Math.floor(Math.random() * 1.9),
-                                              hp += Math.floor(Math.random() * 1.9),
-                                              hp += Math.floor(Math.random() * 1.5);
-              else if (window.wave_size > 15) hp += Math.floor(Math.random() * 1.7),
-                                              hp += Math.floor(Math.random() * 1.7);
-              else if (window.wave_size > 10) hp += Math.floor(Math.random() * 1.6),
-                                              hp += Math.floor(Math.random() * 1.5);
-              else if (window.wave_size >  5) hp += Math.floor(Math.random() * 1.5);
+            if (app.get("level") == 2) {
+                   if (wave_size > 20) hp += Math.floor(Math.random() * 1.9),
+                                       hp += Math.floor(Math.random() * 1.9),
+                                       hp += Math.floor(Math.random() * 1.5);
+              else if (wave_size > 15) hp += Math.floor(Math.random() * 1.7),
+                                       hp += Math.floor(Math.random() * 1.7);
+              else if (wave_size > 10) hp += Math.floor(Math.random() * 1.6),
+                                       hp += Math.floor(Math.random() * 1.5);
+              else if (wave_size >  5) hp += Math.floor(Math.random() * 1.5);
             }
             enemies.push({ x, y, ticks: 0, hp, max_hp: hp });
           })();
