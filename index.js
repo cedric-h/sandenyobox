@@ -194,6 +194,168 @@ const trap_to_recipe = {
 const PORTAL_X = 0;
 const PORTAL_Y = 0;
 
+const LEVEL_TUTORIAL = 0;
+const LEVEL_TREES = 1;
+const LEVEL_STONE = 2;
+function app_init_level(app, level, { clear_cut }={}) {
+  app.set("placing", ID_NONE);
+  app.set("wave_size", 4);
+  app.set("tutorial_arrow_showing", level == LEVEL_TUTORIAL);
+  app.set("tutorial_arrow_x", 300);
+  app.set("tutorial_arrow_y", 300);
+  app.set("vendoring", false);
+  app.set("vendor_data", { name: "null", desc: "void", inventory: [] });
+  app.set("vendors_seen", 0);
+  app.set("vendor_stay_ticks", 0);
+  app.set("modal", MODAL_NONE);
+  if (!clear_cut) app.set("money", 10);
+  if (!clear_cut) {
+    if (level == LEVEL_TUTORIAL)
+      app.set("inv", new Model({
+        [ID_ITEM_WOOD     ]: 35,
+        [ID_ITEM_SCREW    ]:  5,
+        [ID_ITEM_AXE      ]:  2,
+        [ID_ITEM_PICK     ]:  0,
+        [ID_ITEM_FLARE    ]:  1,
+        [ID_ITEM_AIRSTRIKE]:  1,
+        [ID_ITEM_PC       ]:  0,
+        [ID_ITEM_BOOK     ]:  0,
+        [ID_NONE          ]:  0,
+      }));
+    if (level == LEVEL_TREES)
+      app.set("inv", new Model({
+        [ID_ITEM_WOOD     ]: 15,
+        [ID_ITEM_SCREW    ]:  5,
+        [ID_ITEM_AXE      ]:  2,
+        [ID_ITEM_PICK     ]:  0,
+        [ID_ITEM_FLARE    ]:  1,
+        [ID_ITEM_AIRSTRIKE]:  1,
+        [ID_ITEM_PC       ]:  0,
+        [ID_ITEM_BOOK     ]:  0,
+        [ID_NONE          ]:  0,
+      }));
+    if (level == LEVEL_STONE)
+      app.set("inv", new Model({
+        [ID_ITEM_WOOD     ]: 30,
+        [ID_ITEM_SCREW    ]: 15,
+        [ID_ITEM_AXE      ]:  2,
+        [ID_ITEM_PICK     ]:  0,
+        [ID_ITEM_FLARE    ]:  1,
+        [ID_ITEM_AIRSTRIKE]:  1,
+        [ID_ITEM_PC       ]:  0,
+        [ID_ITEM_BOOK     ]:  0,
+        [ID_NONE          ]:  0,
+      }));
+  }
+  app.set("timers", [
+    { time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" },
+    { time: 1, ticks:  5*TPS, text: "vendor", icon: "vendor" },
+    // { time: "1:35", text: "enemies",  icon: "wave",   },
+    // { time: "0:40", text: "vendor",   icon: "vendor", },
+    // { time: "0:01", text: "axe done", icon: "axe",    }
+  ]);
+  app.set("wave_size", 4);
+
+  const sim = {
+    hp: 1,
+    /* blunt tool used to prevent too many expensive calculations from happening on the same frame */
+    tired: false,
+    axes: [],
+    traps: [],
+    walls: [],
+    trees: [],
+    enemies: [],
+    projectiles: [],
+    tick_timeouts: [], /* TODO: make serializable */
+  };
+  if (!clear_cut) {
+    sim.traps = [
+      { x:  0.0836, y:  0.0836, kind: ID_TRAP_WALL },
+      { x: -0.0029, y: -0.2118, kind: ID_TRAP_WALL },
+      { x: -0.2046, y: -0.0303, kind: ID_TRAP_WALL },
+      { x: -0.0476, y: -0.0504, kind: ID_TRAP_WALL },
+      { x: -0.0951, y:  0.0360, kind: ID_TRAP_WALL }
+      // { x: -0.30, y: -0.20, rot: Math.PI/2, ticks: 0, kind: ID_TRAP_PISTON }
+    ];
+    const $ = i => ({ x: sim.traps[i].x, y: sim.traps[i].y });
+    sim.walls = [];
+    sim.walls.push({ from: $(0), to: $(1) });
+    sim.walls.push({ from: $(4), to: $(2) });
+    sim.walls.push({ from: $(4), to: $(0) });
+
+    /* remove wall of tutbuild so it can be placed in tutorial */
+    if (level != LEVEL_TUTORIAL)
+      sim.walls.push({ from: $(4), to: $(3) });
+  }
+  if (level == LEVEL_TUTORIAL)
+    sim_spawn_trees(sim, 1);
+  if (level == LEVEL_TREES)
+    sim_spawn_trees(sim, 50);
+  if (level == LEVEL_STONE)
+    sim_spawn_stones(sim),
+    sim_spawn_trees (sim, 30);
+  sim_calc_nav_nodes(sim);
+
+  app.set("sim", sim);
+
+  function sim_spawn_stones(sim) {
+    for (let i = 0; i < 15; i++) {
+      const t = i/15;
+      const CIRCLE = 0.525;
+      const SQUARE = 0.470;
+      const ret = {
+        x: Math.cos(t*Math.PI*2)*CIRCLE,
+        y: Math.sin(t*Math.PI*2)*CIRCLE,
+        tier: 1,
+        rot: Math.random() * Math.PI*2,
+        seed: Math.random()
+      };
+      if (Math.abs(ret.x) > SQUARE) ret.x = SQUARE*Math.sign(ret.x);
+      if (Math.abs(ret.y) > SQUARE) ret.y = SQUARE*Math.sign(ret.y);
+      sim.trees.push(ret);
+    }
+  }
+
+  function sim_spawn_trees(sim, tree_count) {
+    const { walls, trees } = sim;
+
+    let _i = 0;
+    while (trees.length < tree_count && _i < 1e7) {
+      _i++;
+      let ret = {
+        x: lerp(-0.5, 0.5, Math.random()),
+        y: lerp(-0.5, 0.5, Math.random()),
+        tier: 0,
+        rot: Math.random() * Math.PI*2,
+        seed: Math.random()
+      };
+
+      /* brute force the constraints; very monte carlo */
+      for (const { x, y } of trees) {
+        if (point_to_point(x, y, ret.x, ret.y) < 0.10) {
+          ret = undefined;
+          break;
+        }
+      }
+      if (ret == undefined) continue;
+
+      if (point_to_point(PORTAL_X, PORTAL_Y, ret.x, ret.y) < 0.10)
+        continue;
+
+      for (const { from, to } of walls) {
+        if (point_to_line(from, to, ret.x, ret.y) < 0.06) {
+          ret = undefined;
+          break;
+        }
+      }
+      if (ret == undefined) continue;
+
+      trees.push(ret);
+    }
+  }
+
+}
+
 function walls_stuck_out(sim, stick_out) {
   const { walls } = sim;
 
@@ -358,24 +520,6 @@ function sim_calc_nav_nodes(sim, ctx) {
     ctx.fill();
   }
   sim.nav_nodes = control_nodes;
-}
-
-function sim_set_tutbuild(sim) {
-  sim.traps = [
-    { x:  0.0836, y:  0.0836, kind: ID_TRAP_WALL },
-    { x: -0.0029, y: -0.2118, kind: ID_TRAP_WALL },
-    { x: -0.2046, y: -0.0303, kind: ID_TRAP_WALL },
-    { x: -0.0476, y: -0.0504, kind: ID_TRAP_WALL },
-    { x: -0.0951, y:  0.0360, kind: ID_TRAP_WALL }
-    // { x: -0.30, y: -0.20, rot: Math.PI/2, ticks: 0, kind: ID_TRAP_PISTON }
-  ];
-  const $ = i => ({ x: sim.traps[i].x, y: sim.traps[i].y });
-  sim.walls = [
-    { from: $(0), to: $(1) },
-    { from: $(4), to: $(2) },
-    { from: $(4), to: $(0) },
-    { from: $(4), to: $(3) }
-  ];
 }
 
 const ItemBox = kind({
@@ -618,6 +762,28 @@ const App = kind({
     {
       tag: "canvas",
       style: "z-index: -1; position: absolute",
+    },
+    {
+      classes: "arrow-parent",
+      bindings: [
+        { from: "app.tutorial_arrow_showing", to: "showing" },
+        { from: "app.tutorial_arrow_x",       to: "left" },
+        { from: "app.tutorial_arrow_y",       to: "top" },
+      ],
+      computed: [
+        { method: "set_styles", path: [ "showing", "left", "top" ] },
+      ],
+      set_styles() {
+        const left = this.get("left");
+        const top = this.get("top");
+        let style = `left: ${left}px; top: ${top}px;`;
+        if (this.get("showing") == false) style += 'display: none;';
+        this.set("style", style);
+      },
+      components: [
+        { classes: "arrow-line" },
+        { classes: "arrow-point" },
+      ]
     },
     {
       classes: "sidebar sidesidebar",
@@ -1001,131 +1167,6 @@ const App = kind({
   ]
 });
 
-function app_init_level(app, level, { clear_cut }={}) {
-
-  app.set("placing", ID_NONE);
-  app.set("wave_size", 4);
-  app.set("vendoring", false);
-  app.set("vendor_data", { name: "null", desc: "void", inventory: [] });
-  app.set("vendors_seen", 0);
-  app.set("vendor_stay_ticks", 0);
-  app.set("modal", MODAL_NONE);
-  if (!clear_cut) app.set("money", 10);
-  if (!clear_cut) {
-    if (level == 0)
-      app.set("inv", new Model({
-        [ID_ITEM_WOOD     ]: 15,
-        [ID_ITEM_SCREW    ]:  5,
-        [ID_ITEM_AXE      ]:  2,
-        [ID_ITEM_PICK     ]:  0,
-        [ID_ITEM_FLARE    ]:  1,
-        [ID_ITEM_AIRSTRIKE]:  1,
-        [ID_ITEM_PC       ]:  0,
-        [ID_ITEM_BOOK     ]:  0,
-        [ID_NONE          ]:  0,
-      }));
-    if (level == 1)
-      app.set("inv", new Model({
-        [ID_ITEM_WOOD     ]: 30,
-        [ID_ITEM_SCREW    ]: 15,
-        [ID_ITEM_AXE      ]:  2,
-        [ID_ITEM_PICK     ]:  0,
-        [ID_ITEM_FLARE    ]:  1,
-        [ID_ITEM_AIRSTRIKE]:  1,
-        [ID_ITEM_PC       ]:  0,
-        [ID_ITEM_BOOK     ]:  0,
-        [ID_NONE          ]:  0,
-      }));
-  }
-  app.set("timers", [
-    { time: 1, ticks: 10*TPS, text: "enemies", icon: "wave" },
-    { time: 1, ticks:  5*TPS, text: "vendor", icon: "vendor" },
-    // { time: "1:35", text: "enemies",  icon: "wave",   },
-    // { time: "0:40", text: "vendor",   icon: "vendor", },
-    // { time: "0:01", text: "axe done", icon: "axe",    }
-  ]);
-  app.set("wave_size", 4);
-
-  const sim = {
-    hp: 1,
-    /* blunt tool used to prevent too many expensive calculations from happening on the same frame */
-    tired: false,
-    axes: [],
-    traps: [],
-    walls: [],
-    trees: [],
-    enemies: [],
-    projectiles: [],
-    tick_timeouts: [], /* TODO: make serializable */
-  };
-  if (!clear_cut) sim_set_tutbuild(sim);
-  if (level == 1)
-    sim_spawn_trees(sim, 50);
-  if (level == 2)
-    sim_spawn_stones(sim),
-    sim_spawn_trees (sim, 30);
-  sim_calc_nav_nodes(sim);
-
-  app.set("sim", sim);
-
-  function sim_spawn_stones(sim) {
-    for (let i = 0; i < 15; i++) {
-      const t = i/15;
-      const CIRCLE = 0.525;
-      const SQUARE = 0.470;
-      const ret = {
-        x: Math.cos(t*Math.PI*2)*CIRCLE,
-        y: Math.sin(t*Math.PI*2)*CIRCLE,
-        tier: 1,
-        rot: Math.random() * Math.PI*2,
-        seed: Math.random()
-      };
-      if (Math.abs(ret.x) > SQUARE) ret.x = SQUARE*Math.sign(ret.x);
-      if (Math.abs(ret.y) > SQUARE) ret.y = SQUARE*Math.sign(ret.y);
-      sim.trees.push(ret);
-    }
-  }
-
-  function sim_spawn_trees(sim, tree_count) {
-    const { walls, trees } = sim;
-
-    let _i = 0;
-    while (trees.length < tree_count && _i < 1e7) {
-      _i++;
-      let ret = {
-        x: lerp(-0.5, 0.5, Math.random()),
-        y: lerp(-0.5, 0.5, Math.random()),
-        tier: 0,
-        rot: Math.random() * Math.PI*2,
-        seed: Math.random()
-      };
-
-      /* brute force the constraints; very monte carlo */
-      for (const { x, y } of trees) {
-        if (point_to_point(x, y, ret.x, ret.y) < 0.10) {
-          ret = undefined;
-          break;
-        }
-      }
-      if (ret == undefined) continue;
-
-      if (point_to_point(PORTAL_X, PORTAL_Y, ret.x, ret.y) < 0.10)
-        continue;
-
-      for (const { from, to } of walls) {
-        if (point_to_line(from, to, ret.x, ret.y) < 0.06) {
-          ret = undefined;
-          break;
-        }
-      }
-      if (ret == undefined) continue;
-
-      trees.push(ret);
-    }
-  }
-
-}
-
 ready(function() {
   let app;
   {
@@ -1135,11 +1176,11 @@ ready(function() {
      * could potentially have done this in the constructor */
     const app_init = {};
     app_init.set = (key, val) => app_init[key] = val;
-    app_init_level(app_init, 1);
+    app_init_level(app_init, LEVEL_TUTORIAL);
 
     delete app_init['set'];
     app_init.view = App;
-    app_init.level = 1;
+    app_init.level = LEVEL_TUTORIAL;
     app = new EnyoApplication(app_init);
   }
 
@@ -1637,6 +1678,87 @@ ready(function() {
     ctx.scale(scale, scale);
     // ctx.rotate(now * 0.001);
     screen_to_world = ctx.getTransform().invertSelf();
+    let mouse = new DOMPoint(mouse_x, mouse_y, 0, 1).matrixTransform(screen_to_world);
+
+    /* tutorial state machine has to be here because it needs ctx.getTransform()
+     * to find building coordinates in screen coordiantes to place pointy arrow there */
+    if (app.get("level") == LEVEL_TUTORIAL) {
+      const sim = app.get("sim");
+      const CRAFT_BUTTON_ID = "application_sandEnyoBox_trap_menu_button";
+      const TRAP_BUTTON_ID  = "application_sandEnyoBox_trap_menu_button3";
+      const AXE_INVENTORY_ID  = "application_sandEnyoBox_control50_img";
+
+      let _id = 0;
+      const TUTSTAGE_WALL_CRAFT  = _id++;
+      const TUTSTAGE_WALL_PLACE  = _id++;
+      const TUTSTAGE_TRAP_SELECT = _id++;
+      const TUTSTAGE_TRAP_CRAFT  = _id++;
+      const TUTSTAGE_TRAP_PLACE  = _id++;
+      const TUTSTAGE_TRAP_ORIENT = _id++;
+      const TUTSTAGE_AXE_SELECT  = _id++;
+      const TUTSTAGE_AXE_PLACE   = _id++;
+      if (window.tutstage == undefined) window.tutstage = TUTSTAGE_WALL_CRAFT;
+
+      const point_at_element = (id, next_stage) => {
+        const e = document.getElementById(id);
+        const { left, top } = e.getBoundingClientRect();
+        app.set("tutorial_arrow_x", left);
+        app.set("tutorial_arrow_y",  top);
+        e.onmousedown = () => window.tutstage = next_stage;
+      }
+
+      const point_in_world = (x, y, next_stage) => {
+        {
+          const p = new DOMPoint(x, y, 0, 1).matrixTransform(ctx.getTransform());
+          app.set("tutorial_arrow_x", p.x);
+          app.set("tutorial_arrow_y", p.y);
+        }
+
+        if (mouse_down && point_to_point(mouse.x, mouse.y, x, y) < 0.03)
+          window.tutstage = next_stage;
+      }
+
+      if (window.tutstage == TUTSTAGE_WALL_CRAFT)
+        point_at_element(CRAFT_BUTTON_ID, TUTSTAGE_WALL_PLACE);
+
+      if (window.tutstage == TUTSTAGE_WALL_PLACE)
+        point_in_world(
+          lerp(sim.traps[3].x, sim.traps[4].x, 0.5),
+          lerp(sim.traps[3].y, sim.traps[4].y, 0.5),
+          TUTSTAGE_TRAP_SELECT
+        );
+
+      if (window.tutstage == TUTSTAGE_TRAP_SELECT)
+        point_at_element(TRAP_BUTTON_ID, TUTSTAGE_TRAP_CRAFT);
+
+      if (window.tutstage == TUTSTAGE_TRAP_CRAFT)
+        point_at_element(CRAFT_BUTTON_ID, TUTSTAGE_TRAP_PLACE);
+
+      if (window.tutstage == TUTSTAGE_TRAP_PLACE)
+        point_in_world(PORTAL_X, PORTAL_Y, TUTSTAGE_TRAP_ORIENT);
+
+      if (window.tutstage == TUTSTAGE_TRAP_ORIENT)
+        point_in_world(PORTAL_X, PORTAL_Y-0.05, TUTSTAGE_AXE_SELECT);
+
+      if (window.tutstage == TUTSTAGE_AXE_SELECT) {
+        const next_stage = TUTSTAGE_AXE_PLACE;
+        point_at_element(AXE_INVENTORY_ID, next_stage);
+        if (app.get("placing") == ID_ITEM_AXE)
+          window.tutstage = next_stage;
+      }
+
+      if (window.tutstage == TUTSTAGE_AXE_PLACE) {
+        const next_stage = -1;
+        if (trees.length == 0)
+          window.tutstage = next_stage;
+        else
+          point_in_world(trees[0].x, trees[0].y, next_stage);
+      }
+
+      if (window.tutstage == -1) {
+        app.set("tutorial_arrow_showing", false);
+      }
+    }
 
     if (0) {
       const size = 0.06;
@@ -1671,7 +1793,6 @@ ready(function() {
       ctx.globalAlpha = 1;
     }
 
-    let mouse = new DOMPoint(mouse_x, mouse_y, 0, 1).matrixTransform(screen_to_world);
     let closest = trees.reduce((a, t) => {
       const dist = point_to_point(t.x, t.y, mouse.x, mouse.y);
       if (dist < a.dist) return { t, dist };

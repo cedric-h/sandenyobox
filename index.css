@@ -5,6 +5,33 @@ vim: sw=2 ts=2 expandtab smartindent ft=css
 .icon-shadow       { filter: drop-shadow(3px 5px 5px rgba(0, 0, 0, 0.4)); }
 *:hover > .icon-shadow { filter: drop-shadow(3px 5px 5px black); }
 
+.arrow-parent {
+  position: absolute;
+  rotate: 45deg;
+  width: 5.5em;
+  z-index: 10;
+  animation: 0.8s infinite alternate poke;
+}
+@keyframes poke {
+  from { translate: -4.5em -4.5em; }
+  to { translate: -6.5em -6.5em; }
+}
+.arrow-line {
+  margin-top: 1em;
+  width: 3em;
+  background: crimson;
+  height: 1em;
+  float: left;
+}
+.arrow-point {
+  width: 0;
+  height: 0;
+  border-top: 1.5em solid transparent;
+  border-bottom: 1.5em solid transparent;
+  border-left: 2.5em solid crimson;
+  float: right;
+}
+
 .item-box {
   width: 4.8em;
   height: 4.8em;
